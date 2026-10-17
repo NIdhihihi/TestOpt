@@ -65,6 +65,20 @@ CREATE TABLE IF NOT EXISTS code_changes (
     CHECK (time_budget >= 0)
 );
 
+
+CREATE TABLE IF NOT EXISTS code_change_modules (
+    change_id VARCHAR(50) NOT NULL,
+    module_id VARCHAR(50) NOT NULL,
+    PRIMARY KEY (change_id, module_id),
+    FOREIGN KEY (change_id)
+        REFERENCES code_changes(change_id)
+        ON DELETE CASCADE,
+    FOREIGN KEY (module_id)
+        REFERENCES modules(module_id)
+        ON DELETE CASCADE
+);
+
+
 CREATE TABLE IF NOT EXISTS optimization_runs (
     run_id VARCHAR(50) PRIMARY KEY,
     project_id VARCHAR(50) NOT NULL,
