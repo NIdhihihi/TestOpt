@@ -11,6 +11,36 @@ import {
 
 const router = Router();
 
+router.get("/projects/:projectId/modules", async (req, res) => {
+  try {
+    const [modules] = await pool.query(
+      "SELECT module_id AS moduleId, module_name AS moduleName, criticality FROM modules WHERE project_id = ? ORDER BY module_name",
+      [req.params.projectId],
+    );
+
+    if (modules.length === 0) {
+      return res.status(404).json({ success: false, message: "Project was not found or has no modules." });
+    }
+
+    return res.json({ success: true, modules });
+  } catch (error) {
+    console.error("Module retrieval failed:", error.message);
+    return res.status(500).json({ success: false, message: "Modules could not be retrieved." });
+  }
+});
+
+router.get("/workers", async (req, res) => {
+  try {
+    const [workers] = await pool.query(
+      "SELECT worker_id AS workerId, worker_status AS workerStatus FROM workers WHERE worker_status = 'AVAILABLE' ORDER BY worker_id",
+    );
+    return res.json({ success: true, workers });
+  } catch (error) {
+    console.error("Worker retrieval failed:", error.message);
+    return res.status(500).json({ success: false, message: "Workers could not be retrieved." });
+  }
+});
+
 function validateRequest(body) {
   const { projectId, changedModuleIds, timeBudget, workerCount, algorithm = "GREEDY" } = body;
 
@@ -52,16 +82,24 @@ router.post("/optimize", async (req, res) => {
   const connection = await pool.getConnection();
 
   try {
-    const [modules, dependencies, tests, coverage, history] = await Promise.all([
+    const [modules, dependencies, tests, coverage, history, availableWorkers] = await Promise.all([
       connection.query("SELECT module_id, module_name, criticality FROM modules WHERE project_id = ?", [projectId]).then(([rows]) => rows),
       connection.query("SELECT source_module_id, target_module_id FROM module_dependencies WHERE project_id = ?", [projectId]).then(([rows]) => rows),
       connection.query("SELECT test_id, test_name, execution_time, priority, status FROM test_cases WHERE project_id = ?", [projectId]).then(([rows]) => rows),
       connection.query("SELECT tc.test_id, tc.module_id, tc.coverage_weight FROM test_coverage tc JOIN modules m ON m.module_id = tc.module_id WHERE m.project_id = ?", [projectId]).then(([rows]) => rows),
       connection.query("SELECT th.test_id, th.total_executions, th.failure_count, th.last_execution FROM test_history th JOIN test_cases tc ON tc.test_id = th.test_id WHERE tc.project_id = ?", [projectId]).then(([rows]) => rows),
+      connection.query("SELECT worker_id FROM workers WHERE worker_status = 'AVAILABLE'").then(([rows]) => rows),
     ]);
 
     if (modules.length === 0) {
       return res.status(404).json({ success: false, message: "Project was not found or has no modules." });
+    }
+
+    if (workerCount > availableWorkers.length) {
+      return res.status(400).json({
+        success: false,
+        message: `Only ${availableWorkers.length} worker(s) are currently available. Choose that number or fewer.`,
+      });
     }
 
     const moduleIds = new Set(modules.map((module) => module.module_id));
