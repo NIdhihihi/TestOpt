@@ -23,7 +23,6 @@ function App() {
   const [error, setError] = useState("");
 
   async function loadSetupData() {
-    setError("");
     try {
       const [moduleResponse, workerResponse] = await Promise.all([
         fetch(`${API_BASE_URL}/optimization/projects/${PROJECT_ID}/modules`),
@@ -32,6 +31,7 @@ function App() {
       const [moduleData, workerData] = await Promise.all([moduleResponse.json(), workerResponse.json()]);
       if (!moduleResponse.ok) throw new Error(moduleData.message);
       if (!workerResponse.ok) throw new Error(workerData.message);
+      setError("");
       setModules(moduleData.modules);
       setAvailableWorkers(workerData.workers);
       setWorkerCount((current) => Math.min(Math.max(1, Number(current)), Math.max(1, workerData.workers.length)));
@@ -40,7 +40,10 @@ function App() {
     }
   }
 
-  useEffect(() => { loadSetupData(); }, []);
+  useEffect(() => {
+    const initialLoad = window.setTimeout(loadSetupData, 0);
+    return () => window.clearTimeout(initialLoad);
+  }, []);
 
   const selectedModuleNames = useMemo(
     () => modules.filter((module) => changedModuleIds.includes(module.moduleId)).map((module) => module.moduleName),
