@@ -1,5 +1,6 @@
 import { Router } from "express";
 import pool from "../db/connection.js";
+import executionRouter from "../execution/routes.js";
 import optimizationRouter from "./optimization.js";
 
 const router = Router();
@@ -33,5 +34,6 @@ router.get("/db-test", async (req, res) => {
 });
 
 router.use("/optimization", optimizationRouter);
+router.use("/execution", executionRouter);
 
 export default router;

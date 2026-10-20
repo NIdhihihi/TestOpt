@@ -49,6 +49,8 @@ Run the SQL files from your MySQL client, in this order:
 1. `database/schema.sql`
 2. `database/seed.sql`
 
+If you created the database before the execution module was merged, also run `database/migrations/001_add_worker_count.sql` once.
+
 The sample data includes modules, dependencies, test cases, coverage mappings, execution history, and workers.
 
 ### 4. Run the backend

@@ -64,7 +64,7 @@ function simulateStatus() {
 
 async function getPlan(connection, runId, strategy) {
   const [runs] = await connection.query(
-    `SELECT run_id, project_id, status
+    `SELECT run_id, project_id, worker_count AS workerCount, status
      FROM optimization_runs
      WHERE run_id = ?`,
     [runId]
@@ -100,7 +100,9 @@ async function getPlan(connection, runId, strategy) {
     `SELECT worker_id AS workerId, worker_status AS workerStatus
      FROM workers
      WHERE worker_status = 'AVAILABLE'
-     ORDER BY worker_id`
+     ORDER BY worker_id
+     LIMIT ?`,
+    [runs[0].workerCount]
   );
 
   if (workers.length === 0) {
@@ -185,7 +187,7 @@ router.post("/:runId/compare", async (req, res) => {
     // Fetch the test set and available workers once so every strategy
     // is evaluated against the same inputs.
     const [runs] = await connection.query(
-      `SELECT run_id, project_id, status
+      `SELECT run_id, project_id, worker_count AS workerCount, status
        FROM optimization_runs
        WHERE run_id = ?`,
       [req.params.runId]
@@ -223,7 +225,9 @@ router.post("/:runId/compare", async (req, res) => {
       `SELECT worker_id AS workerId, worker_status AS workerStatus
        FROM workers
        WHERE worker_status = 'AVAILABLE'
-       ORDER BY worker_id`
+       ORDER BY worker_id
+       LIMIT ?`,
+      [runs[0].workerCount]
     );
 
     if (workers.length === 0) {
@@ -343,7 +347,7 @@ router.post("/:runId", async (req, res) => {
     await startConnection.beginTransaction();
 
     const [runs] = await startConnection.query(
-      `SELECT run_id, status
+      `SELECT run_id, worker_count AS workerCount, status
        FROM optimization_runs
        WHERE run_id = ?
        FOR UPDATE`,
@@ -409,7 +413,9 @@ router.post("/:runId", async (req, res) => {
        FROM workers
        WHERE worker_status = 'AVAILABLE'
        ORDER BY worker_id
-       FOR UPDATE`
+       LIMIT ?
+       FOR UPDATE`,
+      [runs[0].workerCount]
     );
 
     if (workers.length === 0) {

@@ -88,8 +88,8 @@ router.post("/optimize", async (req, res) => {
       [changedModuleIds.map((moduleId) => [changeId, moduleId])],
     );
     await connection.query(
-      "INSERT INTO optimization_runs (run_id, project_id, change_id, algorithm, time_budget, status) VALUES (?, ?, ?, ?, ?, ?)",
-      [runId, projectId, changeId, algorithm, timeBudget, "SELECTED"],
+      "INSERT INTO optimization_runs (run_id, project_id, change_id, algorithm, time_budget, worker_count, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [runId, projectId, changeId, algorithm, timeBudget, workerCount, "SELECTED"],
     );
     if (selectedTests.length > 0) {
       await connection.query(

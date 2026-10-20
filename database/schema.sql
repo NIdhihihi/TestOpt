@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS optimization_runs (
     change_id VARCHAR(50),
     algorithm VARCHAR(50) NOT NULL,
     time_budget DECIMAL(8,2) NOT NULL,
+    worker_count INT NOT NULL,
     status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (project_id) REFERENCES projects(project_id),
