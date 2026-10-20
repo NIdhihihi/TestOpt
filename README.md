@@ -106,6 +106,10 @@ Open the local URL printed by Vite, usually `http://localhost:5173`.
 
 Create feature branches from the latest `develop` branch. Commit work to your own feature branch and open a pull request into `develop` after testing.
 
+## Continuous Integration
+
+GitHub Actions runs on every push and pull request to `develop` or `main`. It installs exact dependencies, checks backend syntax, runs backend tests, then lints and builds the frontend. Wait for both checks to pass before merging a pull request.
+
 ## Security
 
 Never commit `.env` files, database passwords, or other secrets. Each team member must configure their own local credentials.
