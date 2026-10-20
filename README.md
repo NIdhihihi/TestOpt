@@ -63,6 +63,25 @@ The backend runs at `http://localhost:5000`.
 
 Health check: `http://localhost:5000/api/health`
 
+### Optimization API
+
+Submit a change for impact analysis and test selection:
+
+```http
+POST /api/optimization/optimize
+Content-Type: application/json
+
+{
+  "projectId": "P_TESTOPT",
+  "changedModuleIds": ["M_AUTH"],
+  "timeBudget": 15,
+  "workerCount": 2,
+  "algorithm": "GREEDY"
+}
+```
+
+`algorithm` accepts `GREEDY` (default) or `KNAPSACK`. The response includes affected modules, selected tests, their scores, and a persisted `runId` for the execution module.
+
 ### 5. Run the frontend
 
 Open a second terminal:

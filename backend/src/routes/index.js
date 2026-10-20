@@ -1,5 +1,6 @@
 import { Router } from "express";
 import pool from "../db/connection.js";
+import optimizationRouter from "./optimization.js";
 
 const router = Router();
 
@@ -30,5 +31,7 @@ router.get("/db-test", async (req, res) => {
     });
   }
 });
+
+router.use("/optimization", optimizationRouter);
 
 export default router;
