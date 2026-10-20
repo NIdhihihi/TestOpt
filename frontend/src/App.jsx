@@ -1,192 +1,49 @@
 import { useEffect, useMemo, useState } from "react";
 import "./App.css";
 
-const API_BASE_URL = "http://localhost:5000/api";
-const PROJECT_ID = "P_TESTOPT";
+const API = "http://localhost:5000/api";
+const blankProject = { projectName: "", description: "" };
 
-function formatNumber(value) {
-  return Number(value).toFixed(2).replace(/\.00$/, "");
+function getImpactLevels(changedModuleIds, dependencies) {
+  const dependents = new Map();
+  dependencies.forEach(({ sourceModuleId, targetModuleId }) => {
+    dependents.set(targetModuleId, [...(dependents.get(targetModuleId) || []), sourceModuleId]);
+  });
+  const visited = new Set(changedModuleIds);
+  let frontier = [...changedModuleIds];
+  const levels = frontier.length ? [frontier] : [];
+  while (frontier.length) {
+    const next = frontier.flatMap((moduleId) => dependents.get(moduleId) || []).filter((moduleId) => !visited.has(moduleId));
+    next.forEach((moduleId) => visited.add(moduleId));
+    if (next.length) levels.push(next);
+    frontier = next;
+  }
+  return levels;
 }
 
 function App() {
-  const [modules, setModules] = useState([]);
-  const [availableWorkers, setAvailableWorkers] = useState([]);
-  const [changedModuleIds, setChangedModuleIds] = useState([]);
-  const [timeBudget, setTimeBudget] = useState(15);
-  const [workerCount, setWorkerCount] = useState(2);
-  const [algorithm, setAlgorithm] = useState("GREEDY");
-  const [strategy, setStrategy] = useState("GREEDY");
-  const [optimization, setOptimization] = useState(null);
-  const [plan, setPlan] = useState(null);
-  const [execution, setExecution] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  async function loadSetupData() {
-    try {
-      const [moduleResponse, workerResponse] = await Promise.all([
-        fetch(`${API_BASE_URL}/optimization/projects/${PROJECT_ID}/modules`),
-        fetch(`${API_BASE_URL}/optimization/workers`),
-      ]);
-      const [moduleData, workerData] = await Promise.all([moduleResponse.json(), workerResponse.json()]);
-      if (!moduleResponse.ok) throw new Error(moduleData.message);
-      if (!workerResponse.ok) throw new Error(workerData.message);
-      setError("");
-      setModules(moduleData.modules);
-      setAvailableWorkers(workerData.workers);
-      setWorkerCount((current) => Math.min(Math.max(1, Number(current)), Math.max(1, workerData.workers.length)));
-    } catch {
-      setError("Could not load modules and workers. Start the backend at http://localhost:5000, then retry.");
-    }
-  }
-
-  useEffect(() => {
-    const initialLoad = window.setTimeout(loadSetupData, 0);
-    return () => window.clearTimeout(initialLoad);
-  }, []);
-
-  const selectedModuleNames = useMemo(
-    () => modules.filter((module) => changedModuleIds.includes(module.moduleId)).map((module) => module.moduleName),
-    [modules, changedModuleIds],
-  );
-
-  function toggleModule(moduleId) {
-    setChangedModuleIds((current) => current.includes(moduleId)
-      ? current.filter((id) => id !== moduleId)
-      : [...current, moduleId]);
-  }
-
-  async function request(path, body) {
-    const response = await fetch(`${API_BASE_URL}${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.message ?? "Request failed.");
-    return data;
-  }
-
-  async function optimize(event) {
-    event.preventDefault();
-    if (changedModuleIds.length === 0) {
-      setError("Choose at least one changed module.");
-      return;
-    }
-
-    setLoading(true);
-    setError("");
-    setPlan(null);
-    setExecution(null);
-    try {
-      const result = await request("/optimization/optimize", {
-        projectId: PROJECT_ID,
-        changedModuleIds,
-        timeBudget: Number(timeBudget),
-        workerCount: Number(workerCount),
-        algorithm,
-      });
-      setOptimization(result);
-    } catch (requestError) {
-      setError(requestError.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function previewPlan() {
-    setLoading(true);
-    setError("");
-    setExecution(null);
-    try {
-      setPlan(await request(`/execution/${optimization.runId}/plan`, { strategy }));
-    } catch (requestError) {
-      setError(requestError.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function approveExecution() {
-    setLoading(true);
-    setError("");
-    try {
-      setExecution(await request(`/execution/${optimization.runId}`, {
-        strategy,
-        approved: true,
-        approvalToken: plan.approvalToken,
-      }));
-    } catch (requestError) {
-      setError(requestError.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <main className="app-shell">
-      <header className="hero">
-        <div>
-          <p className="eyebrow">TEST EXECUTION INTELLIGENCE</p>
-          <h1>TestOpt</h1>
-          <p className="lede">Select the tests that matter, fit them to your budget, and schedule the run.</p>
-        </div>
-        <div className="status"><span />Backend-driven workflow</div>
-      </header>
-
-      {error && <div className="alert" role="alert">{error}<button className="retry" onClick={loadSetupData}>Retry connection</button></div>}
-
-      <section className="panel form-panel">
-        <div className="section-heading">
-          <div><p className="eyebrow">01 / DEFINE CHANGE</p><h2>Optimization request</h2></div>
-          {selectedModuleNames.length > 0 && <p className="selection-note">{selectedModuleNames.join(", ")}</p>}
-        </div>
-        <form onSubmit={optimize}>
-          <fieldset>
-            <legend>Changed modules</legend>
-            <div className="module-grid">
-              {modules.map((module) => (
-                <label className={`module-option ${changedModuleIds.includes(module.moduleId) ? "selected" : ""}`} key={module.moduleId}>
-                  <input type="checkbox" checked={changedModuleIds.includes(module.moduleId)} onChange={() => toggleModule(module.moduleId)} />
-                  <span>{module.moduleName}</span><small>Criticality {module.criticality}/10</small>
-                </label>
-              ))}
-            </div>
-          </fieldset>
-          <div className="controls">
-            <label>Time budget (minutes)<input type="number" min="1" step="1" value={timeBudget} onChange={(event) => setTimeBudget(event.target.value)} /></label>
-            <label>Available workers<input type="number" min="1" max={Math.max(1, availableWorkers.length)} step="1" value={workerCount} onChange={(event) => setWorkerCount(event.target.value)} /><small>{availableWorkers.length} available now</small></label>
-            <label>Selection algorithm<select value={algorithm} onChange={(event) => setAlgorithm(event.target.value)}><option value="GREEDY">Greedy</option><option value="KNAPSACK">Knapsack DP</option></select></label>
-            <button className="primary" disabled={loading}>{loading ? "Working…" : "Optimize tests"}</button>
-          </div>
-        </form>
-      </section>
-
-      {optimization && <section className="panel results-panel">
-        <div className="section-heading"><div><p className="eyebrow">02 / SELECT TESTS</p><h2>Optimization results</h2></div><span className="run-id">{optimization.runId}</span></div>
-        <div className="metric-grid">
-          <div><span>Time selected</span><strong>{formatNumber(optimization.totalExecutionTime)} / {optimization.timeBudget} min</strong></div>
-          <div><span>Total score</span><strong>{formatNumber(optimization.totalScore)}</strong></div>
-          <div><span>Tests selected</span><strong>{optimization.selectedTests.length} of {optimization.candidatesConsidered}</strong></div>
-          <div><span>Affected modules</span><strong>{optimization.affectedModuleIds.length}</strong></div>
-        </div>
-        <p className="affected"><b>Affected:</b> {optimization.affectedModuleIds.join(" · ")}</p>
-        <div className="test-list">
-          {optimization.selectedTests.map((test, index) => <article className="test-card" key={test.testId}><span className="rank">{index + 1}</span><div><h3>{test.testName}</h3><p>{test.testId} · {test.priority} priority · covers {test.coveredModuleIds.join(", ")}</p></div><strong>{test.executionTime} min</strong><span className="score">{formatNumber(test.score)} score</span></article>)}
-        </div>
-        <div className="execution-actions"><label>Scheduling strategy<select value={strategy} onChange={(event) => { setStrategy(event.target.value); setPlan(null); setExecution(null); }}><option value="GREEDY">Greedy load balancing</option><option value="FCFS">First come, first served</option><option value="PRIORITY">Priority first</option><option value="LPT">Longest processing time</option></select></label><button className="primary" onClick={previewPlan} disabled={loading}>{loading ? "Working…" : "Preview execution plan"}</button></div>
-      </section>}
-
-      {plan && <section className="panel"><div className="section-heading"><div><p className="eyebrow">03 / REVIEW PLAN</p><h2>Worker schedule</h2></div><span className="tag">{plan.schedulingStrategy}</span></div>
-        <div className="schedule-grid">{plan.plan.workers.map((worker) => <article className="worker-card" key={worker.workerId}><div className="worker-top"><h3>{worker.workerId}</h3><span>{worker.estimatedLoad} min load</span></div>{worker.tests.map((test) => <div className="scheduled-test" key={test.testId}><b>{test.testId}</b><span>{test.startOffset}–{test.endOffset} min</span></div>)}</article>)}</div>
-        <div className="execution-actions"><p>{plan.plan.metrics.totalTests} tests · {plan.plan.metrics.makespan} min makespan · {plan.plan.metrics.workerUtilization}% utilization</p><button className="primary" onClick={approveExecution} disabled={loading}>{loading ? "Working…" : "Approve & execute"}</button></div>
-      </section>}
-
-      {execution && <section className="panel"><div className="section-heading"><div><p className="eyebrow">04 / RESULTS</p><h2>Execution complete</h2></div><span className="tag success">{execution.results.length} saved results</span></div>
-        <div className="test-list">{execution.results.map((result) => <article className="test-card" key={result.executionId}><span className={`result-dot ${result.executionStatus.toLowerCase()}`} /><div><h3>{result.testId}</h3><p>{result.workerId} · {result.actualTime} minutes</p></div><span className={`result-status ${result.executionStatus.toLowerCase()}`}>{result.executionStatus}</span></article>)}</div>
-      </section>}
-    </main>
-  );
+  const [projects, setProjects] = useState([]); const [projectId, setProjectId] = useState(""); const [modules, setModules] = useState([]); const [workers, setWorkers] = useState([]); const [catalog, setCatalog] = useState(null); const [changed, setChanged] = useState([]); const [timeBudget, setTimeBudget] = useState(15); const [workerCount, setWorkerCount] = useState(1); const [algorithm, setAlgorithm] = useState("GREEDY"); const [strategy, setStrategy] = useState("GREEDY"); const [optimization, setOptimization] = useState(null); const [plan, setPlan] = useState(null); const [execution, setExecution] = useState(null); const [loading, setLoading] = useState(false); const [error, setError] = useState(""); const [notice, setNotice] = useState(""); const [projectForm, setProjectForm] = useState(blankProject); const [moduleForm, setModuleForm] = useState({ moduleName: "", criticality: 5 }); const [testForm, setTestForm] = useState({ testName: "", executionTime: 1, priority: "MEDIUM" }); const [dependencyForm, setDependencyForm] = useState({ sourceModuleId: "", targetModuleId: "" }); const [coverageForm, setCoverageForm] = useState({ testId: "", moduleId: "", coverageWeight: 1 });
+  async function api(path, method = "GET", body) { const response = await fetch(`${API}${path}`, { method, headers: body ? { "Content-Type": "application/json" } : undefined, body: body ? JSON.stringify(body) : undefined }); const data = await response.json(); if (!response.ok) throw new Error(data.message || "Request failed."); return data; }
+  async function loadProjects() { const data = await api("/catalog/projects"); setProjects(data.projects); return data.projects; }
+  async function loadProject(id = projectId) { if (!id) return; const [moduleData, workerData, catalogData] = await Promise.all([api(`/optimization/projects/${id}/modules`), api("/optimization/workers"), api(`/catalog/projects/${id}`)]); setModules(moduleData.modules); setWorkers(workerData.workers); setCatalog(catalogData); setChanged([]); setOptimization(null); setPlan(null); setExecution(null); setWorkerCount((value) => Math.min(Math.max(1, Number(value)), Math.max(1, workerData.workers.length))); }
+  // These initial loads intentionally run once and when the selected ID changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { const timer = window.setTimeout(() => { loadProjects().then((items) => { if (items.length) setProjectId(items[0].projectId); else setError("Create a project before starting an optimization run."); }).catch(() => setError("Could not reach the backend. Start it at http://localhost:5000, then retry.")); }, 0); return () => window.clearTimeout(timer); }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (!projectId) return undefined; const timer = window.setTimeout(() => loadProject(projectId).then(() => setError("")).catch((requestError) => setError(requestError.message)), 0); return () => window.clearTimeout(timer); }, [projectId]);
+  const selectedNames = useMemo(() => modules.filter((module) => changed.includes(module.moduleId)).map((module) => module.moduleName), [modules, changed]);
+  const impactLevels = useMemo(() => getImpactLevels(changed, catalog?.dependencies || []), [changed, catalog]);
+  const moduleOptions = modules.map((module) => <option key={module.moduleId} value={module.moduleId}>{module.moduleName}</option>);
+  function toggle(moduleId) { setChanged((items) => items.includes(moduleId) ? items.filter((id) => id !== moduleId) : [...items, moduleId]); }
+  async function optimize(event) { event.preventDefault(); if (!changed.length) return setError("Choose at least one changed module."); setLoading(true); setError(""); try { setOptimization(await api("/optimization/optimize", "POST", { projectId, changedModuleIds: changed, timeBudget: Number(timeBudget), workerCount: Number(workerCount), algorithm })); setPlan(null); setExecution(null); } catch (requestError) { setError(requestError.message); } finally { setLoading(false); } }
+  async function preview() { setLoading(true); setError(""); try { setPlan(await api(`/execution/${optimization.runId}/plan`, "POST", { strategy })); } catch (requestError) { setError(requestError.message); } finally { setLoading(false); } }
+  async function execute() { setLoading(true); setError(""); try { setExecution(await api(`/execution/${optimization.runId}`, "POST", { strategy, approved: true, approvalToken: plan.approvalToken })); } catch (requestError) { setError(requestError.message); } finally { setLoading(false); } }
+  async function save(event, path, body, reset) { event.preventDefault(); setLoading(true); setError(""); setNotice(""); try { const result = await api(path, "POST", body); await loadProjects(); const id = result.project?.projectId || projectId; if (id !== projectId) setProjectId(id); else await loadProject(id); reset(); setNotice("Saved. The data is ready for the next optimization run."); } catch (requestError) { setError(requestError.message); } finally { setLoading(false); } }
+  return <main className="app-shell"><header className="hero"><div><p className="eyebrow">TEST EXECUTION INTELLIGENCE</p><h1>TestOpt</h1><p className="lede">Select the tests that matter, fit them to your budget, and schedule the run.</p></div><div className="status"><span />Backend-driven workflow</div></header>{error && <div className="alert" role="alert">{error}<button className="retry" onClick={() => window.location.reload()}>Retry connection</button></div>}{notice && <div className="notice">{notice}</div>}
+    <section className="panel"><div className="section-heading"><div><p className="eyebrow">01 / DEFINE CHANGE</p><h2>Optimization request</h2></div></div><label className="project-picker">Project<select value={projectId} onChange={(event) => setProjectId(event.target.value)}>{projects.map((project) => <option value={project.projectId} key={project.projectId}>{project.projectName}</option>)}</select></label><form onSubmit={optimize}><fieldset><legend>Changed modules</legend><div className="module-grid">{modules.map((module) => <label className={`module-option ${changed.includes(module.moduleId) ? "selected" : ""}`} key={module.moduleId}><input type="checkbox" checked={changed.includes(module.moduleId)} onChange={() => toggle(module.moduleId)} /><span>{module.moduleName}</span><small>Criticality {module.criticality}/10</small></label>)}</div></fieldset>{selectedNames.length > 0 && <><p className="selection-note">Selected: {selectedNames.join(", ")}</p><div className="bfs-panel"><b>BFS impact traversal</b><p>Starting with the changed module, TestOpt visits every module that depends on it.</p>{impactLevels.map((level, index) => <div className="bfs-level" key={index}><span>{index === 0 ? "Changed" : `Level ${index}`}</span>{level.map((moduleId) => <strong key={moduleId}>{modules.find((module) => module.moduleId === moduleId)?.moduleName || moduleId}</strong>)}</div>)}</div></>}<div className="controls"><label>Time budget (minutes)<input type="number" min="1" value={timeBudget} onChange={(event) => setTimeBudget(event.target.value)} /></label><label>Workers<input type="number" min="1" max={Math.max(1, workers.length)} value={workerCount} onChange={(event) => setWorkerCount(event.target.value)} /><small>{workers.length} available now</small></label><label>Selection algorithm<select value={algorithm} onChange={(event) => setAlgorithm(event.target.value)}><option value="GREEDY">Greedy</option><option value="KNAPSACK">Knapsack DP</option></select></label><button className="primary" disabled={loading || !projectId}>Optimize tests</button></div></form></section>
+    {optimization && <section className="panel"><div className="section-heading"><div><p className="eyebrow">02 / SELECT TESTS</p><h2>Optimization results</h2></div><span className="run-id">{optimization.runId}</span></div><div className="metric-grid"><div><span>Time selected</span><strong>{optimization.totalExecutionTime} / {optimization.timeBudget} min</strong></div><div><span>Total score</span><strong>{optimization.totalScore}</strong></div><div><span>Tests selected</span><strong>{optimization.selectedTests.length} of {optimization.candidatesConsidered}</strong></div><div><span>Affected modules</span><strong>{optimization.affectedModuleIds.length}</strong></div></div><div className="test-list">{optimization.selectedTests.map((test, index) => <article className="test-card" key={test.testId}><span className="rank">{index + 1}</span><div><h3>{test.testName}</h3><p>{test.testId} · {test.priority} priority</p></div><strong>{test.executionTime} min</strong></article>)}</div><div className="execution-actions"><label>Scheduling strategy<select value={strategy} onChange={(event) => setStrategy(event.target.value)}><option value="GREEDY">Greedy load balancing</option><option value="FCFS">First come, first served</option><option value="PRIORITY">Priority first</option><option value="LPT">Longest processing time</option></select></label><button className="primary" onClick={preview} disabled={loading}>Preview execution plan</button></div></section>}
+    {plan && <section className="panel"><div className="section-heading"><div><p className="eyebrow">03 / REVIEW PLAN</p><h2>Worker schedule</h2></div><span className="tag">{plan.schedulingStrategy}</span></div><div className="schedule-grid">{plan.plan.workers.map((worker) => <article className="worker-card" key={worker.workerId}><div className="worker-top"><h3>{worker.workerId}</h3><span>{worker.estimatedLoad} min load</span></div>{worker.tests.map((test) => <div className="scheduled-test" key={test.testId}><b>{test.testId}</b><span>{test.startOffset}–{test.endOffset} min</span></div>)}</article>)}</div><div className="execution-actions"><button className="primary" onClick={execute} disabled={loading}>Approve & execute</button></div></section>}
+    {execution && <section className="panel"><h2>Execution complete</h2><div className="test-list">{execution.results.map((result) => <article className="test-card" key={result.executionId}><span className={`result-dot ${result.executionStatus.toLowerCase()}`} /><div><h3>{result.testId}</h3><p>{result.workerId} · {result.actualTime} minutes</p></div><span className={`result-status ${result.executionStatus.toLowerCase()}`}>{result.executionStatus}</span></article>)}</div></section>}
+    <section className="panel management"><div className="section-heading"><div><p className="eyebrow">DATA MANAGEMENT</p><h2>Project catalog</h2></div><span className="tag">Safe create and update</span></div><p className="affected">Add live project data here. Delete actions are unavailable while run history is retained.</p><div className="management-grid"><form onSubmit={(event) => save(event, "/catalog/projects", projectForm, () => setProjectForm(blankProject))}><h3>New project</h3><input required placeholder="Project name" value={projectForm.projectName} onChange={(event) => setProjectForm({ ...projectForm, projectName: event.target.value })} /><input placeholder="Description" value={projectForm.description} onChange={(event) => setProjectForm({ ...projectForm, description: event.target.value })} /><button className="secondary" disabled={loading}>Create project</button></form><form onSubmit={(event) => save(event, `/catalog/projects/${projectId}/modules`, moduleForm, () => setModuleForm({ moduleName: "", criticality: 5 }))}><h3>Add module</h3><input required placeholder="Module name" value={moduleForm.moduleName} onChange={(event) => setModuleForm({ ...moduleForm, moduleName: event.target.value })} /><input required type="number" min="1" max="10" value={moduleForm.criticality} onChange={(event) => setModuleForm({ ...moduleForm, criticality: event.target.value })} /><button className="secondary" disabled={loading || !projectId}>Save module</button></form><form onSubmit={(event) => save(event, `/catalog/projects/${projectId}/tests`, testForm, () => setTestForm({ testName: "", executionTime: 1, priority: "MEDIUM" }))}><h3>Add test</h3><input required placeholder="Test name" value={testForm.testName} onChange={(event) => setTestForm({ ...testForm, testName: event.target.value })} /><input required type="number" min="0.01" step="0.01" value={testForm.executionTime} onChange={(event) => setTestForm({ ...testForm, executionTime: event.target.value })} /><select value={testForm.priority} onChange={(event) => setTestForm({ ...testForm, priority: event.target.value })}><option>HIGH</option><option>MEDIUM</option><option>LOW</option></select><button className="secondary" disabled={loading || !projectId}>Save test</button></form><form onSubmit={(event) => save(event, `/catalog/projects/${projectId}/dependencies`, dependencyForm, () => setDependencyForm({ sourceModuleId: "", targetModuleId: "" }))}><h3>Add dependency</h3><select required value={dependencyForm.sourceModuleId} onChange={(event) => setDependencyForm({ ...dependencyForm, sourceModuleId: event.target.value })}><option value="">Source module</option>{moduleOptions}</select><select required value={dependencyForm.targetModuleId} onChange={(event) => setDependencyForm({ ...dependencyForm, targetModuleId: event.target.value })}><option value="">Affected module</option>{moduleOptions}</select><button className="secondary" disabled={loading || !projectId}>Save dependency</button></form><form onSubmit={(event) => save(event, `/catalog/projects/${projectId}/coverage`, coverageForm, () => setCoverageForm({ testId: "", moduleId: "", coverageWeight: 1 }))}><h3>Set coverage</h3><select required value={coverageForm.testId} onChange={(event) => setCoverageForm({ ...coverageForm, testId: event.target.value })}><option value="">Test</option>{catalog?.tests.map((test) => <option key={test.testId} value={test.testId}>{test.testName}</option>)}</select><select required value={coverageForm.moduleId} onChange={(event) => setCoverageForm({ ...coverageForm, moduleId: event.target.value })}><option value="">Module</option>{moduleOptions}</select><input required type="number" min="0" max="1" step="0.01" value={coverageForm.coverageWeight} onChange={(event) => setCoverageForm({ ...coverageForm, coverageWeight: event.target.value })} /><button className="secondary" disabled={loading || !projectId}>Save coverage</button></form></div></section></main>;
 }
-
 export default App;

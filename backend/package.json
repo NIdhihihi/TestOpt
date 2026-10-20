@@ -4,8 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "check": "node --check src/app.js && node --check src/routes/index.js && node --check src/routes/optimization.js && node --check src/services/optimizationService.js && node --check src/execution/routes.js && node --check src/execution/scheduler.js",
+    "check": "node --check src/app.js && node --check src/routes/index.js && node --check src/routes/catalog.js && node --check src/routes/optimization.js && node --check src/services/optimizationService.js && node --check src/execution/routes.js && node --check src/execution/scheduler.js",
     "test": "node --test src/execution/scheduler.test.js",
+    "test:integration": "node --test src/integration/workflow.test.js",
     "start": "node src/server.js",
     "dev": "nodemon src/server.js"
   },

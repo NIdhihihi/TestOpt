@@ -113,6 +113,15 @@ Create feature branches from the latest `develop` branch. Commit work to your ow
 
 GitHub Actions runs on every push and pull request to `develop` or `main`. It installs exact dependencies, checks backend syntax, runs backend tests, then lints and builds the frontend. Wait for both checks to pass before merging a pull request.
 
+Run the database-backed integration suite locally after MySQL is configured:
+
+```bash
+cd backend
+npm run test:integration
+```
+
+It tests optimization, scheduling, invalid input, unavailable workers, and simulated worker errors. It restores temporary run data, worker statuses, and test history when complete.
+
 ## Security
 
 Never commit `.env` files, database passwords, or other secrets. Each team member must configure their own local credentials.
