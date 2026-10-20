@@ -88,13 +88,13 @@ router.post("/optimize", async (req, res) => {
       [changedModuleIds.map((moduleId) => [changeId, moduleId])],
     );
     await connection.query(
-      "INSERT INTO optimization_runs (run_id, project_id, change_id, algorithm, time_budget, worker_count, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO optimization_runs (run_id, project_id, change_id, selection_algorithm, time_budget, worker_count, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
       [runId, projectId, changeId, algorithm, timeBudget, workerCount, "SELECTED"],
     );
     if (selectedTests.length > 0) {
       await connection.query(
-        "INSERT INTO selected_tests (run_id, test_id, score, selection_reason) VALUES ?",
-        [selectedTests.map((test) => [runId, test.testId, test.score, test.reason])],
+        "INSERT INTO selected_tests (run_id, test_id, score, selection_rank, selection_reason) VALUES ?",
+        [selectedTests.map((test, index) => [runId, test.testId, test.score, index + 1, test.reason])],
       );
     }
     await connection.commit();
@@ -103,7 +103,7 @@ router.post("/optimize", async (req, res) => {
       success: true,
       runId,
       projectId,
-      algorithm,
+      selectionAlgorithm: algorithm,
       changedModuleIds,
       affectedModuleIds,
       workerCount,

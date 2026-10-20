@@ -64,7 +64,8 @@ function simulateStatus() {
 
 async function getPlan(connection, runId, strategy) {
   const [runs] = await connection.query(
-    `SELECT run_id, project_id, worker_count AS workerCount, status
+    `SELECT run_id, project_id, selection_algorithm AS selectionAlgorithm,
+            scheduling_strategy AS schedulingStrategy, worker_count AS workerCount, status
      FROM optimization_runs
      WHERE run_id = ?`,
     [runId]
@@ -86,7 +87,7 @@ async function getPlan(connection, runId, strategy) {
      FROM selected_tests st
      JOIN test_cases tc ON tc.test_id = st.test_id
      WHERE st.run_id = ?
-     ORDER BY st.test_id`,
+     ORDER BY st.selection_rank, st.test_id`,
     [runId]
   );
 
@@ -145,6 +146,8 @@ router.post("/:runId/plan", async (req, res) => {
 
       approvedPlans.set(approvalToken, {
         runId: req.params.runId,
+        selectionAlgorithm: run.selectionAlgorithm,
+        schedulingStrategy: strategy,
         strategy,
         signature: JSON.stringify(plan),
         expiresAt: Date.now() + 10 * 60 * 1000, // expires in 10 minutes
@@ -155,6 +158,8 @@ router.post("/:runId/plan", async (req, res) => {
         approved: false,
         approvalToken,
         runId: req.params.runId,
+        selectionAlgorithm: run.selectionAlgorithm,
+        schedulingStrategy: strategy,
         strategy,
         plan,
         message: "Review this plan before approving execution.",
@@ -187,7 +192,8 @@ router.post("/:runId/compare", async (req, res) => {
     // Fetch the test set and available workers once so every strategy
     // is evaluated against the same inputs.
     const [runs] = await connection.query(
-      `SELECT run_id, project_id, worker_count AS workerCount, status
+      `SELECT run_id, project_id, selection_algorithm AS selectionAlgorithm,
+              scheduling_strategy AS schedulingStrategy, worker_count AS workerCount, status
        FROM optimization_runs
        WHERE run_id = ?`,
       [req.params.runId]
@@ -210,7 +216,7 @@ router.post("/:runId/compare", async (req, res) => {
        FROM selected_tests st
        JOIN test_cases tc ON tc.test_id = st.test_id
        WHERE st.run_id = ?
-       ORDER BY st.test_id`,
+       ORDER BY st.selection_rank, st.test_id`,
       [req.params.runId]
     );
 
@@ -396,7 +402,7 @@ router.post("/:runId", async (req, res) => {
        FROM selected_tests st
        JOIN test_cases tc ON tc.test_id = st.test_id
        WHERE st.run_id = ?
-       ORDER BY st.test_id`,
+       ORDER BY st.selection_rank, st.test_id`,
       [runId]
     );
 
@@ -449,7 +455,7 @@ router.post("/:runId", async (req, res) => {
 
     await startConnection.query(
       `UPDATE optimization_runs
-       SET status = 'RUNNING', algorithm = ?
+       SET status = 'RUNNING', scheduling_strategy = ?
        WHERE run_id = ?`,
       [strategy, runId]
     );

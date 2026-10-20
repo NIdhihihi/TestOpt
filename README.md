@@ -49,7 +49,10 @@ Run the SQL files from your MySQL client, in this order:
 1. `database/schema.sql`
 2. `database/seed.sql`
 
-If you created the database before the execution module was merged, also run `database/migrations/001_add_worker_count.sql` once.
+If you created the database before the execution module was merged, also run these files once, in order:
+
+1. `database/migrations/001_add_worker_count.sql`
+2. `database/migrations/002_separate_selection_and_scheduling_algorithms.sql`
 
 The sample data includes modules, dependencies, test cases, coverage mappings, execution history, and workers.
 
@@ -82,7 +85,7 @@ Content-Type: application/json
 }
 ```
 
-`algorithm` accepts `GREEDY` (default) or `KNAPSACK`. The response includes affected modules, selected tests, their scores, and a persisted `runId` for the execution module.
+`algorithm` is the selection algorithm and accepts `GREEDY` (default) or `KNAPSACK`. The response includes `selectionAlgorithm`, affected modules, selected tests, their scores, and a persisted `runId` for the execution module. Execution separately records its scheduling strategy (`FCFS`, `PRIORITY`, `GREEDY`, or `LPT`).
 
 ### 5. Run the frontend
 

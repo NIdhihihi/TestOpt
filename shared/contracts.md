@@ -86,6 +86,7 @@ The optimization module provides:
 
 - `runId`
 - `projectId`
+- `selectionAlgorithm` (`GREEDY` or `KNAPSACK`)
 - `selectedTests`
 - `workerCount`
 - `timeBudget`
@@ -102,6 +103,8 @@ Each selected test contains:
 `score` represents the test's selection value as calculated by the optimization algorithm. `reason` explains why the test was selected. `coveredModuleIds` lists the relevant modules covered by that test.
 
 The selected tests must fit within the configured time budget.
+
+Execution records its own `schedulingStrategy` (`FCFS`, `PRIORITY`, `GREEDY`, or `LPT`) without replacing `selectionAlgorithm`. Selected tests retain their optimization order through `selectionRank`.
 
 ## 5. Execution → Analytics / History
 
