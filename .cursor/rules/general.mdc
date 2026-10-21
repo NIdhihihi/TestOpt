@@ -1,0 +1,6 @@
+---
+description: General TestOpt development rules
+alwaysApply: true
+---
+
+Read RULES.md, docs/PRD.md, and docs/ARCHITECTURE.md before substantial work. Keep changes focused, validate input, preserve authorization, run relevant checks, and avoid unrelated edits.
