@@ -1,10 +1,14 @@
 import { Router } from "express";
 import { randomUUID } from "node:crypto";
 import pool from "../db/connection.js";
+import { requireAuth } from "../middleware/auth.js";
+import { requireOrganizationRole, requireProjectRole } from "../middleware/authorization.js";
 
 const router = Router();
 const priorities = new Set(["HIGH", "MEDIUM", "LOW"]);
 const workerStatuses = new Set(["AVAILABLE", "BUSY", "UNAVAILABLE"]);
+
+router.use(requireAuth);
 
 function text(value, name, maxLength = 150) {
   if (typeof value !== "string" || value.trim() === "" || value.trim().length > maxLength) {
@@ -30,10 +34,11 @@ async function projectExists(projectId) {
   return projects.length > 0;
 }
 
-router.get("/projects", async (_req, res) => {
+router.get("/projects", async (req, res) => {
   try {
     const [projects] = await pool.query(
-      "SELECT project_id AS projectId, project_name AS projectName, description FROM projects ORDER BY project_name",
+      "SELECT p.project_id AS projectId, p.project_name AS projectName, p.description, p.organization_id AS organizationId FROM projects p JOIN organization_members om ON om.organization_id = p.organization_id WHERE om.user_id = ? ORDER BY p.project_name",
+      [req.auth.sub],
     );
     return res.json({ success: true, projects });
   } catch (error) {
@@ -45,6 +50,7 @@ router.get("/projects", async (_req, res) => {
 router.get("/projects/:projectId", async (req, res) => {
   try {
     const projectId = req.params.projectId;
+    await requireProjectRole(req.auth.sub, projectId);
     const [projects, modules, dependencies, tests, coverage] = await Promise.all([
       pool.query("SELECT project_id AS projectId, project_name AS projectName, description FROM projects WHERE project_id = ?", [projectId]).then(([rows]) => rows),
       pool.query("SELECT module_id AS moduleId, module_name AS moduleName, criticality FROM modules WHERE project_id = ? ORDER BY module_name", [projectId]).then(([rows]) => rows),
@@ -73,9 +79,13 @@ router.post("/projects", async (req, res) => {
   try {
     const projectName = text(req.body.projectName, "projectName");
     const description = typeof req.body.description === "string" ? req.body.description.trim() : "";
+    const organizationId = text(req.body.organizationId, "organizationId", 50);
+    await requireOrganizationRole(req.auth.sub, organizationId);
+    const [organizations] = await pool.query("SELECT organization_id FROM organizations WHERE organization_id = ?", [organizationId]);
+    if (!organizations.length) return res.status(404).json({ success: false, message: "Organization was not found." });
     const projectId = generatedId("P");
-    await pool.query("INSERT INTO projects (project_id, project_name, description) VALUES (?, ?, ?)", [projectId, projectName, description || null]);
-    return res.status(201).json({ success: true, project: { projectId, projectName, description } });
+    await pool.query("INSERT INTO projects (project_id, organization_id, project_name, description) VALUES (?, ?, ?, ?)", [projectId, organizationId, projectName, description || null]);
+    return res.status(201).json({ success: true, project: { projectId, organizationId, projectName, description } });
   } catch (error) {
     return res.status(400).json({ success: false, message: error.message || "Project could not be created." });
   }
@@ -83,6 +93,7 @@ router.post("/projects", async (req, res) => {
 
 router.put("/projects/:projectId/modules/:moduleId", async (req, res) => {
   try {
+    await requireProjectRole(req.auth.sub, req.params.projectId, ["OWNER", "ADMIN", "TEST_MANAGER"]);
     const moduleName = text(req.body.moduleName, "moduleName");
     const criticality = numberInRange(req.body.criticality, "criticality", 1, 10);
     const [result] = await pool.query("UPDATE modules SET module_name = ?, criticality = ? WHERE project_id = ? AND module_id = ?", [moduleName, criticality, req.params.projectId, req.params.moduleId]);
@@ -96,6 +107,7 @@ router.put("/projects/:projectId/modules/:moduleId", async (req, res) => {
 router.post("/projects/:projectId/modules", async (req, res) => {
   try {
     const projectId = req.params.projectId;
+    await requireProjectRole(req.auth.sub, projectId, ["OWNER", "ADMIN", "TEST_MANAGER"]);
     if (!(await projectExists(projectId))) return res.status(404).json({ success: false, message: "Project was not found." });
     const moduleName = text(req.body.moduleName, "moduleName");
     const criticality = numberInRange(req.body.criticality, "criticality", 1, 10);
@@ -110,6 +122,7 @@ router.post("/projects/:projectId/modules", async (req, res) => {
 router.post("/projects/:projectId/dependencies", async (req, res) => {
   try {
     const { projectId } = req.params;
+    await requireProjectRole(req.auth.sub, projectId, ["OWNER", "ADMIN", "TEST_MANAGER"]);
     const sourceModuleId = text(req.body.sourceModuleId, "sourceModuleId", 50);
     const targetModuleId = text(req.body.targetModuleId, "targetModuleId", 50);
     if (sourceModuleId === targetModuleId) throw new Error("A module cannot depend on itself.");
@@ -125,6 +138,7 @@ router.post("/projects/:projectId/dependencies", async (req, res) => {
 router.post("/projects/:projectId/tests", async (req, res) => {
   try {
     const projectId = req.params.projectId;
+    await requireProjectRole(req.auth.sub, projectId, ["OWNER", "ADMIN", "TEST_MANAGER"]);
     if (!(await projectExists(projectId))) return res.status(404).json({ success: false, message: "Project was not found." });
     const testName = text(req.body.testName, "testName");
     const executionTime = numberInRange(req.body.executionTime, "executionTime", 0.01, 100000);
@@ -141,6 +155,7 @@ router.post("/projects/:projectId/tests", async (req, res) => {
 
 router.put("/projects/:projectId/tests/:testId", async (req, res) => {
   try {
+    await requireProjectRole(req.auth.sub, req.params.projectId, ["OWNER", "ADMIN", "TEST_MANAGER"]);
     const testName = text(req.body.testName, "testName");
     const executionTime = numberInRange(req.body.executionTime, "executionTime", 0.01, 100000);
     const priority = text(req.body.priority, "priority", 10).toUpperCase();
@@ -157,6 +172,7 @@ router.put("/projects/:projectId/tests/:testId", async (req, res) => {
 router.put("/projects/:projectId/coverage", async (req, res) => {
   try {
     const { projectId } = req.params;
+    await requireProjectRole(req.auth.sub, projectId, ["OWNER", "ADMIN", "TEST_MANAGER"]);
     const testId = text(req.body.testId, "testId", 50);
     const moduleId = text(req.body.moduleId, "moduleId", 50);
     const coverageWeight = numberInRange(req.body.coverageWeight, "coverageWeight", 0, 1);

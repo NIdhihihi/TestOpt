@@ -8,6 +8,7 @@ let apiBaseUrl;
 const createdRunIds = [];
 const createdUserIds = [];
 const createdOrganizationIds = [];
+const createdProjectIds = [];
 let originalWorkerStatuses = [];
 let originalHistory = [];
 const originalSimulation = {
@@ -16,10 +17,10 @@ const originalSimulation = {
   workerFailure: process.env.SIMULATED_WORKER_FAILURE_PERCENT,
 };
 
-async function post(path, body) {
+async function post(path, body, accessToken) {
   const response = await fetch(`${apiBaseUrl}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}) },
     body: JSON.stringify(body),
   });
 
@@ -85,6 +86,7 @@ after(async () => {
       [entry.total_executions, entry.failure_count, entry.last_execution, entry.test_id],
     );
   }
+  for (const projectId of createdProjectIds) await pool.query("DELETE FROM projects WHERE project_id = ?", [projectId]);
   for (const organizationId of createdOrganizationIds) {
     await pool.query("DELETE FROM organization_members WHERE organization_id = ?", [organizationId]);
     await pool.query("DELETE FROM organizations WHERE organization_id = ?", [organizationId]);
@@ -109,6 +111,13 @@ test("registers, signs in, and returns the authenticated organization", { concur
   assert.ok(registration.body.accessToken);
   createdUserIds.push(registration.body.user.userId);
   createdOrganizationIds.push(registration.body.organization.organizationId);
+
+  const project = await post("/catalog/projects", {
+    projectName: "Authenticated integration project",
+    organizationId: registration.body.organization.organizationId,
+  }, registration.body.accessToken);
+  assert.equal(project.status, 201, project.body.message);
+  createdProjectIds.push(project.body.project.projectId);
 
   const login = await post("/auth/login", { email, password: "A-long-integration-password-123" });
   assert.equal(login.status, 200, login.body.message);
