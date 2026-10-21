@@ -6,6 +6,8 @@ import pool from "../db/connection.js";
 let server;
 let apiBaseUrl;
 const createdRunIds = [];
+const createdUserIds = [];
+const createdOrganizationIds = [];
 let originalWorkerStatuses = [];
 let originalHistory = [];
 const originalSimulation = {
@@ -63,6 +65,7 @@ async function saveHistory(testIds) {
 }
 
 before(async () => {
+  process.env.JWT_SECRET = "integration-test-secret-at-least-thirty-two-characters";
   const [workers] = await pool.query("SELECT worker_id, worker_status FROM workers");
   originalWorkerStatuses = workers;
   server = await new Promise((resolve) => {
@@ -82,11 +85,34 @@ after(async () => {
       [entry.total_executions, entry.failure_count, entry.last_execution, entry.test_id],
     );
   }
+  for (const organizationId of createdOrganizationIds) {
+    await pool.query("DELETE FROM organization_members WHERE organization_id = ?", [organizationId]);
+    await pool.query("DELETE FROM organizations WHERE organization_id = ?", [organizationId]);
+  }
+  for (const userId of createdUserIds) await pool.query("DELETE FROM users WHERE user_id = ?", [userId]);
   process.env.SIMULATED_FAILURE_PERCENT = originalSimulation.failure;
   process.env.SIMULATED_ERROR_PERCENT = originalSimulation.error;
   process.env.SIMULATED_WORKER_FAILURE_PERCENT = originalSimulation.workerFailure;
   await pool.end();
   if (server) await new Promise((resolve) => server.close(resolve));
+});
+
+test("registers, signs in, and returns the authenticated organization", { concurrency: false }, async () => {
+  const email = `integration-${Date.now()}@testopt.local`;
+  const registration = await post("/auth/register", {
+    name: "Integration User",
+    email,
+    password: "A-long-integration-password-123",
+    organizationName: "Integration Organization",
+  });
+  assert.equal(registration.status, 201, registration.body.message);
+  assert.ok(registration.body.accessToken);
+  createdUserIds.push(registration.body.user.userId);
+  createdOrganizationIds.push(registration.body.organization.organizationId);
+
+  const login = await post("/auth/login", { email, password: "A-long-integration-password-123" });
+  assert.equal(login.status, 200, login.body.message);
+  assert.equal(login.body.organizations[0].role, "OWNER");
 });
 
 test("optimizes tests within the budget and compares scheduling strategies", { concurrency: false }, async () => {
