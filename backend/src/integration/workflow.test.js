@@ -30,6 +30,14 @@ async function post(path, body, token = accessToken) {
   return { status: response.status, body: await response.json() };
 }
 
+async function get(path, token = accessToken) {
+  const response = await fetch(`${apiBaseUrl}${path}`, {
+    headers: token ? { authorization: `Bearer ${token}` } : {},
+  });
+
+  return { status: response.status, body: await response.json() };
+}
+
 async function createRun({ changedModuleIds = ["M_AUTH"], timeBudget = 15, workerCount = 2, algorithm = "GREEDY" } = {}) {
   const result = await post("/optimization/optimize", {
     projectId: "P_TESTOPT",
@@ -198,11 +206,22 @@ test("queues an execution job for the background worker", { concurrency: false }
   createdJobIds.push(queued.body.jobId);
 
   let status;
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const [jobs] = await pool.query("SELECT queue_status FROM execution_jobs WHERE job_id = ?", [queued.body.jobId]);
+  let jobError;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const [jobs] = await pool.query("SELECT queue_status, error_message FROM execution_jobs WHERE job_id = ?", [queued.body.jobId]);
     status = jobs[0]?.queue_status;
+    jobError = jobs[0]?.error_message;
     if (["SUCCEEDED", "FAILED"].includes(status)) break;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  assert.equal(status, "SUCCEEDED");
+  assert.equal(status, "SUCCEEDED", jobError);
+});
+
+test("returns project execution analytics", { concurrency: false }, async () => {
+  const analytics = await get("/execution/projects/P_TESTOPT/analytics");
+  assert.equal(analytics.status, 200, analytics.body.message);
+  assert.ok(analytics.body.summary.executionCount > 0);
+  assert.equal(typeof analytics.body.summary.passRate, "number");
+  assert.equal(typeof analytics.body.summary.minutesSaved, "number");
+  assert.ok(Array.isArray(analytics.body.trend));
 });

@@ -13,7 +13,7 @@ function runCommand({ workspacePath, commandName, commandArgs }) {
   if (!workspace.startsWith(`${root}${path.sep}`) && workspace !== root) throw new Error("Runner workspace must stay inside TEST_WORKSPACE_ROOT.");
   const command = process.platform === "win32" && commandName === "npm" ? "npm.cmd" : commandName;
   return new Promise((resolve, reject) => {
-    const child = spawn(command, commandArgs, { cwd: workspace, shell: false, windowsHide: true });
+    const child = spawn(command, commandArgs, { cwd: workspace, shell: process.platform === "win32", windowsHide: true });
     let output = "";
     child.stdout.on("data", (chunk) => { output += chunk; });
     child.stderr.on("data", (chunk) => { output += chunk; });

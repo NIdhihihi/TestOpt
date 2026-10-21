@@ -30,6 +30,42 @@ router.get("/projects/:projectId/runs", async (req, res) => {
   } catch (error) { return res.status(error.statusCode ?? 500).json({ success: false, message: error.message || "Run history could not be retrieved." }); }
 });
 
+router.get("/projects/:projectId/analytics", async (req, res) => {
+  try {
+    const projectId = req.params.projectId;
+    await requireProjectRole(req.auth.sub, projectId);
+    const [[summary], [savings], trend] = await Promise.all([
+      pool.query(
+        `SELECT COUNT(te.execution_id) AS executionCount,
+                COALESCE(SUM(te.execution_status = 'PASSED'), 0) AS passedCount,
+                COALESCE(SUM(te.execution_status = 'FAILED'), 0) AS failedCount,
+                COALESCE(SUM(te.execution_status = 'ERROR'), 0) AS errorCount,
+                COALESCE(AVG(te.actual_time), 0) AS averageDuration
+         FROM test_executions te JOIN optimization_runs r ON r.run_id = te.run_id
+         WHERE r.project_id = ?`, [projectId],
+      ).then(([rows]) => rows),
+      pool.query(
+        `SELECT COALESCE(SUM(GREATEST(0, all_tests.totalTime - selected_tests.selectedTime)), 0) AS minutesSaved
+         FROM optimization_runs r
+         JOIN (SELECT project_id, SUM(execution_time) AS totalTime FROM test_cases WHERE status = 'ACTIVE' GROUP BY project_id) all_tests ON all_tests.project_id = r.project_id
+         LEFT JOIN (SELECT st.run_id, SUM(tc.execution_time) AS selectedTime FROM selected_tests st JOIN test_cases tc ON tc.test_id = st.test_id GROUP BY st.run_id) selected_tests ON selected_tests.run_id = r.run_id
+         WHERE r.project_id = ?`, [projectId],
+      ).then(([rows]) => rows),
+      pool.query(
+        `SELECT DATE(te.completed_at) AS day,
+                SUM(te.execution_status = 'PASSED') AS passed,
+                SUM(te.execution_status = 'FAILED') AS failed,
+                SUM(te.execution_status = 'ERROR') AS errors
+         FROM test_executions te JOIN optimization_runs r ON r.run_id = te.run_id
+         WHERE r.project_id = ? AND te.completed_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
+         GROUP BY DATE(te.completed_at) ORDER BY day`, [projectId],
+      ).then(([rows]) => rows),
+    ]);
+    const total = Number(summary.executionCount);
+    return res.json({ success: true, summary: { executionCount: total, passedCount: Number(summary.passedCount), failedCount: Number(summary.failedCount), errorCount: Number(summary.errorCount), passRate: total ? Number(((Number(summary.passedCount) / total) * 100).toFixed(1)) : 0, averageDuration: Number(Number(summary.averageDuration).toFixed(2)), minutesSaved: Number(Number(savings.minutesSaved).toFixed(2)) }, trend });
+  } catch (error) { return res.status(error.statusCode ?? 500).json({ success: false, message: error.message || "Analytics could not be retrieved." }); }
+});
+
 router.post("/:runId/queue", async (req, res) => {
   try {
     const [runs] = await pool.query("SELECT run_id AS runId, project_id AS projectId FROM optimization_runs WHERE run_id = ?", [req.params.runId]);
