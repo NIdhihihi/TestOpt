@@ -37,6 +37,27 @@ function generatedId(prefix) {
   return `${prefix}_${randomUUID()}`;
 }
 
+function parseCsv(csvText) {
+  if (typeof csvText !== "string" || csvText.length > 1024 * 1024) throw new Error("csvText must be a CSV file up to 1 MB.");
+  const rows = [];
+  let row = []; let cell = ""; let quoted = false;
+  for (let index = 0; index < csvText.length; index += 1) {
+    const character = csvText[index];
+    if (character === '"') { if (quoted && csvText[index + 1] === '"') { cell += '"'; index += 1; } else quoted = !quoted; }
+    else if (character === "," && !quoted) { row.push(cell.trim()); cell = ""; }
+    else if ((character === "\n" || character === "\r") && !quoted) { if (character === "\r" && csvText[index + 1] === "\n") index += 1; row.push(cell.trim()); if (row.some(Boolean)) rows.push(row); row = []; cell = ""; }
+    else cell += character;
+  }
+  if (quoted) throw new Error("CSV contains an unclosed quoted value.");
+  row.push(cell.trim()); if (row.some(Boolean)) rows.push(row);
+  if (rows.length < 2) throw new Error("CSV needs a header row and at least one data row.");
+  const headers = rows.shift().map((header) => header.toLowerCase());
+  if (!headers.includes("type")) throw new Error("CSV must include a type column.");
+  return rows.map((values, index) => Object.fromEntries(headers.map((header, valueIndex) => [header, values[valueIndex] || ""]))).map((entry, index) => ({ ...entry, line: index + 2 }));
+}
+
+function csvValue(row, key, maxLength = 150) { return text(row[key], `${key} on line ${row.line}`, maxLength); }
+
 async function projectExists(projectId) {
   const [projects] = await pool.query("SELECT project_id FROM projects WHERE project_id = ?", [projectId]);
   return projects.length > 0;
@@ -211,6 +232,42 @@ router.put("/projects/:projectId/coverage", async (req, res) => {
   } catch (error) {
     return res.status(400).json({ success: false, message: error.message });
   }
+});
+
+router.post("/projects/:projectId/import", async (req, res) => {
+  let connection;
+  try {
+    const { projectId } = req.params;
+    await requireProjectRole(req.auth.sub, projectId, ["OWNER", "ADMIN", "TEST_MANAGER"]);
+    if (!(await projectExists(projectId))) return res.status(404).json({ success: false, message: "Project was not found." });
+    const rows = parseCsv(req.body.csvText);
+    const modules = rows.filter((row) => row.type.toUpperCase() === "MODULE");
+    const tests = rows.filter((row) => row.type.toUpperCase() === "TEST");
+    const dependencies = rows.filter((row) => row.type.toUpperCase() === "DEPENDENCY");
+    const coverage = rows.filter((row) => row.type.toUpperCase() === "COVERAGE");
+    if (rows.length !== modules.length + tests.length + dependencies.length + coverage.length) throw new Error("type must be MODULE, TEST, DEPENDENCY, or COVERAGE.");
+    const moduleIds = new Set(modules.map((row) => csvValue(row, "id", 50)));
+    const testIds = new Set(tests.map((row) => csvValue(row, "id", 50)));
+    if (moduleIds.size !== modules.length || testIds.size !== tests.length) throw new Error("Module and test IDs must be unique within the CSV.");
+    for (const row of modules) { csvValue(row, "name"); numberInRange(row.criticality, `criticality on line ${row.line}`, 1, 10); }
+    for (const row of tests) { csvValue(row, "name"); numberInRange(row.executiontime, `executionTime on line ${row.line}`, 0.01, 100000); if (!priorities.has(csvValue(row, "priority", 10).toUpperCase())) throw new Error(`Invalid priority on line ${row.line}.`); }
+    connection = await pool.getConnection(); await connection.beginTransaction();
+    const [existingModules, existingTests] = await Promise.all([
+      moduleIds.size ? connection.query("SELECT module_id FROM modules WHERE project_id = ? AND module_id IN (?)", [projectId, [...moduleIds]]) : [[]],
+      testIds.size ? connection.query("SELECT test_id FROM test_cases WHERE project_id = ? AND test_id IN (?)", [projectId, [...testIds]]) : [[]],
+    ]);
+    if (existingModules[0].length || existingTests[0].length) throw new Error("CSV IDs already exist in this project. Use new IDs or edit the existing records.");
+    for (const row of modules) await connection.query("INSERT INTO modules (module_id, project_id, module_name, criticality) VALUES (?, ?, ?, ?)", [row.id, projectId, row.name, Number(row.criticality)]);
+    for (const row of tests) { await connection.query("INSERT INTO test_cases (test_id, project_id, test_name, execution_time, priority) VALUES (?, ?, ?, ?, ?)", [row.id, projectId, row.name, Number(row.executiontime), row.priority.toUpperCase()]); await connection.query("INSERT INTO test_history (test_id) VALUES (?)", [row.id]); }
+    const knownModules = new Set([...moduleIds]); const knownTests = new Set([...testIds]);
+    for (const row of dependencies) { const source = csvValue(row, "sourcemoduleid", 50); const target = csvValue(row, "targetmoduleid", 50); if (source === target || !knownModules.has(source) || !knownModules.has(target)) throw new Error(`Dependencies on line ${row.line} must reference imported module IDs.`); await connection.query("INSERT INTO module_dependencies (project_id, source_module_id, target_module_id) VALUES (?, ?, ?)", [projectId, source, target]); }
+    for (const row of coverage) { const testId = csvValue(row, "testid", 50); const moduleId = csvValue(row, "moduleid", 50); if (!knownTests.has(testId) || !knownModules.has(moduleId)) throw new Error(`Coverage on line ${row.line} must reference imported IDs.`); await connection.query("INSERT INTO test_coverage (test_id, module_id, coverage_weight) VALUES (?, ?, ?)", [testId, moduleId, numberInRange(row.coverageweight, `coverageWeight on line ${row.line}`, 0, 1)]); }
+    await connection.commit();
+    return res.status(201).json({ success: true, imported: { modules: modules.length, tests: tests.length, dependencies: dependencies.length, coverage: coverage.length } });
+  } catch (error) {
+    if (connection) await connection.rollback();
+    return res.status(error.statusCode ?? 400).json({ success: false, message: error.message || "CSV could not be imported." });
+  } finally { if (connection) connection.release(); }
 });
 
 router.post("/workers", async (req, res) => {

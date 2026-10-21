@@ -7,6 +7,7 @@ import { executionQueue } from "../queue/executionQueue.js";
 let server;
 let apiBaseUrl;
 let accessToken;
+let authenticatedProjectId;
 const createdRunIds = [];
 const createdUserIds = [];
 const createdOrganizationIds = [];
@@ -99,7 +100,14 @@ after(async () => {
     );
   }
   for (const userId of createdUserIds) await pool.query("DELETE FROM audit_events WHERE user_id = ?", [userId]);
-  for (const projectId of createdProjectIds) await pool.query("DELETE FROM projects WHERE project_id = ?", [projectId]);
+  for (const projectId of createdProjectIds) {
+    await pool.query("DELETE tc FROM test_coverage tc JOIN test_cases t ON t.test_id = tc.test_id WHERE t.project_id = ?", [projectId]);
+    await pool.query("DELETE md FROM module_dependencies md WHERE md.project_id = ?", [projectId]);
+    await pool.query("DELETE th FROM test_history th JOIN test_cases t ON t.test_id = th.test_id WHERE t.project_id = ?", [projectId]);
+    await pool.query("DELETE FROM test_cases WHERE project_id = ?", [projectId]);
+    await pool.query("DELETE FROM modules WHERE project_id = ?", [projectId]);
+    await pool.query("DELETE FROM projects WHERE project_id = ?", [projectId]);
+  }
   for (const organizationId of createdOrganizationIds) {
     await pool.query("DELETE FROM organization_members WHERE organization_id = ?", [organizationId]);
     await pool.query("DELETE FROM organizations WHERE organization_id = ?", [organizationId]);
@@ -134,10 +142,32 @@ test("registers, signs in, and returns the authenticated organization", { concur
   }, registration.body.accessToken);
   assert.equal(project.status, 201, project.body.message);
   createdProjectIds.push(project.body.project.projectId);
+  authenticatedProjectId = project.body.project.projectId;
 
   const login = await post("/auth/login", { email, password: "A-long-integration-password-123" });
   assert.equal(login.status, 200, login.body.message);
   assert.equal(login.body.organizations[0].role, "OWNER");
+});
+
+test("imports a complete project catalog from CSV", { concurrency: false }, async () => {
+  const suffix = Date.now();
+  const csvText = [
+    "type,id,name,criticality,executionTime,priority,sourceModuleId,targetModuleId,testId,moduleId,coverageWeight",
+    `MODULE,M_IMPORT_AUTH_${suffix},Authentication,9,,,,,,,`,
+    `MODULE,M_IMPORT_ORDER_${suffix},Orders,7,,,,,,,`,
+    `TEST,T_IMPORT_LOGIN_${suffix},Login test,,1.5,HIGH,,,,`,
+    `DEPENDENCY,,,,,,M_IMPORT_ORDER_${suffix},M_IMPORT_AUTH_${suffix},,,`,
+    `COVERAGE,,,,,,,,T_IMPORT_LOGIN_${suffix},M_IMPORT_AUTH_${suffix},0.9`,
+  ].join("\n");
+  const result = await post(`/catalog/projects/${authenticatedProjectId}/import`, { csvText });
+  assert.equal(result.status, 201, result.body.message);
+  assert.deepEqual(result.body.imported, { modules: 2, tests: 1, dependencies: 1, coverage: 1 });
+  const catalog = await get(`/catalog/projects/${authenticatedProjectId}`);
+  assert.equal(catalog.status, 200);
+  assert.equal(catalog.body.modules.length, 2);
+  assert.equal(catalog.body.tests.length, 1);
+  assert.equal(catalog.body.dependencies.length, 1);
+  assert.equal(catalog.body.coverage.length, 1);
 });
 
 test("optimizes tests within the budget and compares scheduling strategies", { concurrency: false }, async () => {
