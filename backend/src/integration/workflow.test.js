@@ -175,13 +175,13 @@ test("optimizes tests within the budget and compares scheduling strategies", { c
 
   assert.deepEqual(run.affectedModuleIds.sort(), ["M_AUTH", "M_ORDER", "M_PAYMENT"]);
   assert.ok(run.totalExecutionTime <= 15);
-  assert.deepEqual(run.selectedTests.map((testCase) => testCase.testId), ["T_PAYFAIL", "T_CHECKOUT"]);
+  assert.deepEqual(run.selectedTests.map((testCase) => testCase.testId), ["T_LOGIN", "T_PAYFAIL", "T_HISTORY"]);
 
   for (const strategy of ["FCFS", "PRIORITY", "GREEDY", "LPT"]) {
     const plan = await post(`/execution/${run.runId}/plan`, { strategy });
     assert.equal(plan.status, 200);
     assert.equal(plan.body.plan.metrics.workerCount, 2);
-    assert.equal(plan.body.plan.metrics.totalTests, 2);
+    assert.equal(plan.body.plan.metrics.totalTests, 3);
   }
 });
 

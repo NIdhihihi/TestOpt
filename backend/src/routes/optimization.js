@@ -6,7 +6,9 @@ import { requireProjectRole } from "../middleware/authorization.js";
 import { recordAuditEvent } from "../services/auditService.js";
 import {
   buildCandidates,
+  checkChangedModulesCoverage,
   findAffectedModuleIds,
+  selectBranchAndBound,
   selectGreedy,
   selectKnapsack,
   summarizeSelection,
@@ -65,8 +67,8 @@ function validateRequest(body) {
   if (!Number.isInteger(workerCount) || workerCount <= 0) {
     return "workerCount must be a positive integer.";
   }
-  if (!["GREEDY", "KNAPSACK"].includes(algorithm)) {
-    return "algorithm must be GREEDY or KNAPSACK.";
+  if (!["GREEDY", "KNAPSACK", "BRANCH_AND_BOUND"].includes(algorithm)) {
+    return "algorithm must be GREEDY, KNAPSACK, or BRANCH_AND_BOUND.";
   }
 
   return null;
@@ -121,12 +123,68 @@ router.post("/optimize", async (req, res) => {
     }
 
     const affectedModuleIds = findAffectedModuleIds(changedModuleIds, dependencies);
-    const candidates = buildCandidates({ tests, coverage, history, modules, affectedModuleIds });
-    const selectedTests = algorithm === "KNAPSACK"
-      ? selectKnapsack(candidates, timeBudget)
-      : selectGreedy(candidates, timeBudget);
+    const candidates = buildCandidates({
+      tests,
+      coverage,
+      history,
+      modules,
+      affectedModuleIds,
+      changedModuleIds,
+    });
+
     const runId = `RUN_${randomUUID()}`;
     const changeId = `CHG_${randomUUID()}`;
+
+    // REQ-4.5.8: If no candidate tests, transition to NO_TESTS_REQUIRED and finish
+    if (candidates.length === 0) {
+      await connection.beginTransaction();
+      await connection.query(
+        "INSERT INTO code_changes (change_id, project_id, time_budget) VALUES (?, ?, ?)",
+        [changeId, projectId, timeBudget],
+      );
+      await connection.query(
+        "INSERT INTO code_change_modules (change_id, module_id) VALUES ?",
+        [changedModuleIds.map((moduleId) => [changeId, moduleId])],
+      );
+      await connection.query(
+        "INSERT INTO optimization_runs (run_id, project_id, change_id, selection_algorithm, time_budget, worker_count, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [runId, projectId, changeId, algorithm, timeBudget, workerCount, "NO_TESTS_REQUIRED"],
+      );
+      await connection.commit();
+
+      return res.status(200).json({
+        success: true,
+        status: "NO_TESTS_REQUIRED",
+        message: "No regression tests are required for the specified changed modules.",
+        runId,
+        projectId,
+        selectionAlgorithm: algorithm,
+        changedModuleIds,
+        affectedModuleIds,
+        workerCount,
+        timeBudget,
+        candidatesConsidered: 0,
+        selectedTests: [],
+        totalExecutionTime: 0,
+        totalScore: 0,
+      });
+    }
+
+    let selectedTests;
+    if (algorithm === "KNAPSACK") {
+      selectedTests = selectKnapsack(candidates, timeBudget);
+    } else if (algorithm === "BRANCH_AND_BOUND") {
+      selectedTests = selectBranchAndBound(candidates, timeBudget);
+    } else {
+      selectedTests = selectGreedy(candidates, timeBudget);
+    }
+
+    // Check coverage of directly changed modules (SRS §5.2)
+    const coverageReport = checkChangedModulesCoverage(selectedTests, changedModuleIds);
+    const warnings = [];
+    if (!coverageReport.allCovered) {
+      warnings.push(`Budget of ${timeBudget} minutes is too small to cover all directly changed modules (${coverageReport.uncoveredChanged.join(", ")}).`);
+    }
 
     await connection.beginTransaction();
     await connection.query(
@@ -161,10 +219,14 @@ router.post("/optimize", async (req, res) => {
       timeBudget,
       candidatesConsidered: candidates.length,
       selectedTests,
+      warnings: warnings.length > 0 ? warnings : undefined,
       ...summarizeSelection(selectedTests),
     });
   } catch (error) {
     await connection.rollback();
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ success: false, message: error.message });
+    }
     console.error("Optimization failed:", error.message);
     return res.status(500).json({ success: false, message: "Optimization could not be completed." });
   } finally {
