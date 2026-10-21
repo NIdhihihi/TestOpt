@@ -25,6 +25,14 @@ function numberInRange(value, name, minimum, maximum) {
   return number;
 }
 
+function runnerConfig(body) {
+  const workspacePath = text(body.workspacePath, "workspacePath", 255);
+  if (workspacePath.includes("..") || workspacePath.startsWith("/") || workspacePath.startsWith("\\")) throw new Error("workspacePath must be a relative folder inside the configured workspace root.");
+  if (body.commandName !== "npm") throw new Error("Only the npm runner is currently supported.");
+  if (!Array.isArray(body.commandArgs) || body.commandArgs.length === 0 || !body.commandArgs.every((arg) => typeof arg === "string" && /^[a-zA-Z0-9_./:@=-]+$/.test(arg))) throw new Error("commandArgs must be a non-empty list of safe npm arguments.");
+  return { workspacePath, commandName: "npm", commandArgs: body.commandArgs };
+}
+
 function generatedId(prefix) {
   return `${prefix}_${randomUUID()}`;
 }
@@ -64,6 +72,23 @@ router.get("/projects/:projectId", async (req, res) => {
     console.error("Project catalog retrieval failed:", error.message);
     return res.status(500).json({ success: false, message: "Project data could not be retrieved." });
   }
+});
+
+router.get("/projects/:projectId/runner", async (req, res) => {
+  try {
+    await requireProjectRole(req.auth.sub, req.params.projectId);
+    const [configs] = await pool.query("SELECT runner_type AS runnerType, workspace_path AS workspacePath, command_name AS commandName, command_args AS commandArgs FROM project_runner_configs WHERE project_id = ?", [req.params.projectId]);
+    return res.json({ success: true, runnerConfig: configs[0] || null });
+  } catch (error) { return res.status(error.statusCode ?? 500).json({ success: false, message: error.message }); }
+});
+
+router.put("/projects/:projectId/runner", async (req, res) => {
+  try {
+    await requireProjectRole(req.auth.sub, req.params.projectId, ["OWNER", "ADMIN", "TEST_MANAGER"]);
+    const config = runnerConfig(req.body);
+    await pool.query("INSERT INTO project_runner_configs (project_id, runner_type, workspace_path, command_name, command_args) VALUES (?, 'NPM', ?, ?, ?) ON DUPLICATE KEY UPDATE workspace_path = VALUES(workspace_path), command_name = VALUES(command_name), command_args = VALUES(command_args)", [req.params.projectId, config.workspacePath, config.commandName, JSON.stringify(config.commandArgs)]);
+    return res.json({ success: true, runnerConfig: { runnerType: "NPM", ...config } });
+  } catch (error) { return res.status(error.statusCode ?? 400).json({ success: false, message: error.message }); }
 });
 
 router.get("/workers", async (_req, res) => {
