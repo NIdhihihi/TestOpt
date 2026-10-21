@@ -1,6 +1,9 @@
 import { Router } from "express";
 import { randomUUID } from "node:crypto";
 import pool from "../db/connection.js";
+import { requireAuth } from "../middleware/auth.js";
+import { requireProjectRole } from "../middleware/authorization.js";
+import { recordAuditEvent } from "../services/auditService.js";
 import {
   buildCandidates,
   findAffectedModuleIds,
@@ -11,8 +14,11 @@ import {
 
 const router = Router();
 
+router.use(requireAuth);
+
 router.get("/projects/:projectId/modules", async (req, res) => {
   try {
+    await requireProjectRole(req.auth.sub, req.params.projectId);
     const [modules] = await pool.query(
       "SELECT module_id AS moduleId, module_name AS moduleName, criticality FROM modules WHERE project_id = ? ORDER BY module_name",
       [req.params.projectId],
@@ -79,6 +85,12 @@ router.post("/optimize", async (req, res) => {
     workerCount,
     algorithm = "GREEDY",
   } = req.body;
+  let projectAccess;
+  try {
+    projectAccess = await requireProjectRole(req.auth.sub, projectId);
+  } catch (error) {
+    return res.status(error.statusCode ?? 403).json({ success: false, message: error.message });
+  }
   const connection = await pool.getConnection();
 
   try {
@@ -136,6 +148,7 @@ router.post("/optimize", async (req, res) => {
       );
     }
     await connection.commit();
+    await recordAuditEvent({ organizationId: projectAccess.organizationId, userId: req.auth.sub, eventType: "OPTIMIZATION_CREATED", resourceType: "optimization_run", resourceId: runId, details: { projectId, algorithm, changedModuleIds, timeBudget, workerCount } });
 
     return res.status(201).json({
       success: true,

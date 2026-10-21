@@ -2,12 +2,32 @@
 import { Router } from "express";
 import { randomUUID } from "node:crypto";
 import pool from "../db/connection.js";
+import { requireAuth } from "../middleware/auth.js";
+import { requireProjectRole } from "../middleware/authorization.js";
+import { recordAuditEvent } from "../services/auditService.js";
 import { createSchedule } from "./scheduler.js";
 
 const router = Router();
 const VALID_STRATEGIES = new Set(["FCFS", "PRIORITY", "GREEDY", "LPT"]);
 // Temporarily remember plans that the developer has reviewed.
 const approvedPlans = new Map();
+
+router.use(requireAuth);
+
+router.get("/projects/:projectId/runs", async (req, res) => {
+  try {
+    await requireProjectRole(req.auth.sub, req.params.projectId);
+    const [runs] = await pool.query(
+      `SELECT r.run_id AS runId, r.selection_algorithm AS selectionAlgorithm, r.scheduling_strategy AS schedulingStrategy,
+              r.time_budget AS timeBudget, r.worker_count AS workerCount, r.status, r.created_at AS createdAt,
+              COUNT(st.test_id) AS selectedTestCount
+       FROM optimization_runs r LEFT JOIN selected_tests st ON st.run_id = r.run_id
+       WHERE r.project_id = ? GROUP BY r.run_id ORDER BY r.created_at DESC LIMIT 25`,
+      [req.params.projectId],
+    );
+    return res.json({ success: true, runs });
+  } catch (error) { return res.status(error.statusCode ?? 500).json({ success: false, message: error.message || "Run history could not be retrieved." }); }
+});
 
 function getStrategy(value) {
   const strategy = String(value ?? "FCFS").toUpperCase();
@@ -135,6 +155,7 @@ router.post("/:runId/plan", async (req, res) => {
         req.params.runId,
         strategy
       );
+      const projectAccess = await requireProjectRole(req.auth.sub, run.project_id);
 
       if (["RUNNING", "COMPLETED"].includes(run.status)) {
         return res.status(409).json({
@@ -152,6 +173,7 @@ router.post("/:runId/plan", async (req, res) => {
         signature: JSON.stringify(plan),
         expiresAt: Date.now() + 10 * 60 * 1000, // expires in 10 minutes
       });
+      await recordAuditEvent({ organizationId: projectAccess.organizationId, userId: req.auth.sub, eventType: "EXECUTION_PLAN_PREVIEWED", resourceType: "optimization_run", resourceId: req.params.runId, details: { strategy } });
 
       return res.json({
         success: true,
@@ -205,6 +227,7 @@ router.post("/:runId/compare", async (req, res) => {
         message: `Optimization run ${req.params.runId} was not found`,
       });
     }
+    await requireProjectRole(req.auth.sub, runs[0].project_id);
 
     const [tests] = await connection.query(
       `SELECT
@@ -353,7 +376,7 @@ router.post("/:runId", async (req, res) => {
     await startConnection.beginTransaction();
 
     const [runs] = await startConnection.query(
-      `SELECT run_id, worker_count AS workerCount, status
+      `SELECT run_id, project_id, worker_count AS workerCount, status
        FROM optimization_runs
        WHERE run_id = ?
        FOR UPDATE`,
@@ -367,6 +390,7 @@ router.post("/:runId", async (req, res) => {
         message: `Optimization run ${runId} was not found`,
       });
     }
+    const projectAccess = await requireProjectRole(req.auth.sub, runs[0].project_id);
 
     if (["RUNNING", "COMPLETED"].includes(runs[0].status)) {
       await startConnection.rollback();
@@ -461,6 +485,7 @@ router.post("/:runId", async (req, res) => {
     );
 
     await startConnection.commit();
+    await recordAuditEvent({ organizationId: projectAccess.organizationId, userId: req.auth.sub, eventType: "EXECUTION_STARTED", resourceType: "optimization_run", resourceId: runId, details: { strategy } });
   } catch (error) {
     await startConnection.rollback();
     console.error("Could not start execution:", error);
