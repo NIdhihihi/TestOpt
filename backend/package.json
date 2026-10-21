@@ -4,9 +4,10 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "check": "node --check src/app.js && node --check src/middleware/auth.js && node --check src/middleware/authorization.js && node --check src/routes/auth.js && node --check src/routes/index.js && node --check src/routes/catalog.js && node --check src/routes/optimization.js && node --check src/services/auditService.js && node --check src/services/optimizationService.js && node --check src/execution/routes.js && node --check src/execution/scheduler.js",
+    "check": "node --check src/app.js && node --check src/middleware/auth.js && node --check src/middleware/authorization.js && node --check src/queue/executionQueue.js && node --check src/routes/auth.js && node --check src/routes/index.js && node --check src/routes/catalog.js && node --check src/routes/optimization.js && node --check src/services/auditService.js && node --check src/services/optimizationService.js && node --check src/execution/routes.js && node --check src/execution/scheduler.js && node --check src/worker.js",
     "test": "node --test src/execution/scheduler.test.js",
     "test:integration": "node --test src/integration/workflow.test.js",
+    "worker": "node src/worker.js",
     "start": "node src/server.js",
     "dev": "nodemon src/server.js"
   },
@@ -16,11 +17,13 @@
   "type": "module",
   "dependencies": {
     "bcryptjs": "^3.0.3",
+    "bullmq": "^6.4.0",
     "cors": "^2.8.6",
     "dotenv": "^18.0.8",
     "express": "^5.3.0",
     "express-rate-limit": "^8.7.1",
     "helmet": "^8.3.0",
+    "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.3",
     "mysql2": "^3.24.6"
   },

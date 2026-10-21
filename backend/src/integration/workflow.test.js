@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import app from "../app.js";
 import pool from "../db/connection.js";
+import { executionQueue } from "../queue/executionQueue.js";
 
 let server;
 let apiBaseUrl;
@@ -10,6 +11,7 @@ const createdRunIds = [];
 const createdUserIds = [];
 const createdOrganizationIds = [];
 const createdProjectIds = [];
+const createdJobIds = [];
 let originalWorkerStatuses = [];
 let originalHistory = [];
 const originalSimulation = {
@@ -77,6 +79,7 @@ before(async () => {
 });
 
 after(async () => {
+  for (const jobId of createdJobIds) await pool.query("DELETE FROM execution_jobs WHERE job_id = ?", [jobId]);
   for (const runId of createdRunIds) await removeRun(runId);
   for (const worker of originalWorkerStatuses) {
     await pool.query("UPDATE workers SET worker_status = ? WHERE worker_id = ?", [worker.worker_status, worker.worker_id]);
@@ -97,6 +100,7 @@ after(async () => {
   process.env.SIMULATED_FAILURE_PERCENT = originalSimulation.failure;
   process.env.SIMULATED_ERROR_PERCENT = originalSimulation.error;
   process.env.SIMULATED_WORKER_FAILURE_PERCENT = originalSimulation.workerFailure;
+  await executionQueue.close();
   await pool.end();
   if (server) await new Promise((resolve) => server.close(resolve));
 });
@@ -185,4 +189,20 @@ test("reports unavailable workers and does not count worker errors as failures",
   );
   const originalFailures = new Map(originalHistory.map((entry) => [entry.test_id, entry.failure_count]));
   assert.ok(historyAfter.every((entry) => entry.failure_count === originalFailures.get(entry.test_id)));
+});
+
+test("queues an execution job for the background worker", { concurrency: false }, async () => {
+  const run = await createRun({ workerCount: 1 });
+  const queued = await post(`/execution/${run.runId}/queue`, { strategy: "GREEDY" });
+  assert.equal(queued.status, 202, queued.body.message);
+  createdJobIds.push(queued.body.jobId);
+
+  let status;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const [jobs] = await pool.query("SELECT queue_status FROM execution_jobs WHERE job_id = ?", [queued.body.jobId]);
+    status = jobs[0]?.queue_status;
+    if (["SUCCEEDED", "FAILED"].includes(status)) break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.equal(status, "SUCCEEDED");
 });

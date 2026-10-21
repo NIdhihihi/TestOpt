@@ -15,6 +15,7 @@
 
 ## Phase 3 — Connected execution
 
+- Redis-backed durable job queue and separately deployed worker process
 - GitHub or GitLab webhook ingestion
 - Change-to-module mapping and pull-request status reporting
 - Test-runner adapters for Jest, Playwright, Cypress, and CI providers

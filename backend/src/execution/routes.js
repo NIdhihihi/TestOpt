@@ -5,6 +5,7 @@ import pool from "../db/connection.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requireProjectRole } from "../middleware/authorization.js";
 import { recordAuditEvent } from "../services/auditService.js";
+import { enqueueExecution } from "../queue/executionQueue.js";
 import { createSchedule } from "./scheduler.js";
 
 const router = Router();
@@ -27,6 +28,24 @@ router.get("/projects/:projectId/runs", async (req, res) => {
     );
     return res.json({ success: true, runs });
   } catch (error) { return res.status(error.statusCode ?? 500).json({ success: false, message: error.message || "Run history could not be retrieved." }); }
+});
+
+router.post("/:runId/queue", async (req, res) => {
+  try {
+    const [runs] = await pool.query("SELECT run_id AS runId, project_id AS projectId FROM optimization_runs WHERE run_id = ?", [req.params.runId]);
+    if (!runs[0]) return res.status(404).json({ success: false, message: "Optimization run was not found." });
+    const projectAccess = await requireProjectRole(req.auth.sub, runs[0].projectId, ["OWNER", "ADMIN", "TEST_MANAGER", "DEVELOPER"]);
+    const jobId = `JOB_${randomUUID()}`;
+    await pool.query("INSERT INTO execution_jobs (job_id, run_id, requested_by_user_id) VALUES (?, ?, ?)", [jobId, runs[0].runId, req.auth.sub]);
+    try {
+      await enqueueExecution({ jobId, runId: runs[0].runId, strategy: getStrategy(req.body?.strategy) });
+    } catch (error) {
+      await pool.query("UPDATE execution_jobs SET queue_status = 'FAILED', error_message = ? WHERE job_id = ?", ["Redis queue is unavailable", jobId]);
+      return res.status(503).json({ success: false, message: "Execution queue is unavailable. Start Redis and the worker, then retry." });
+    }
+    await recordAuditEvent({ organizationId: projectAccess.organizationId, userId: req.auth.sub, eventType: "EXECUTION_QUEUED", resourceType: "execution_job", resourceId: jobId, details: { runId: runs[0].runId } });
+    return res.status(202).json({ success: true, jobId, runId: runs[0].runId, status: "QUEUED" });
+  } catch (error) { return res.status(error.statusCode ?? 500).json({ success: false, message: error.message || "Execution could not be queued." }); }
 });
 
 function getStrategy(value) {
