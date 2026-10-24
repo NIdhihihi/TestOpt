@@ -1,0 +1,1 @@
+{"private":true,"scripts":{"pass":"node fixture.cjs pass","fail":"node fixture.cjs fail","hang":"node fixture.cjs hang"}}

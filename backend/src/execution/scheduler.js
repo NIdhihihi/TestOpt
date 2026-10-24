@@ -216,6 +216,7 @@ export function createSchedule({ selectedTests, strategy, workers }) {
     tests: worker.tests,
   }));
 
+  // SRS REQ-4.8.3, ADD §7.3: Complete Scheduling Metrics
   const loads = workerSummaries.map((worker) => worker.estimatedLoad);
   const makespan = Math.max(...loads);
   const totalExecutionTime = tests.reduce(
@@ -225,9 +226,14 @@ export function createSchedule({ selectedTests, strategy, workers }) {
   const workerCount = workerSummaries.length;
   const minimumLoad = Math.min(...loads);
   const totalCapacity = workerCount * makespan;
+  const maxExecutionTime = tests.reduce(
+    (max, test) => Math.max(max, test.executionTime),
+    0
+  );
+  // Theoretical Lower Bound: LB = max(sum(pj) / m, max(pj)) for fractional durations
   const lowerBound = Math.max(
-    Math.ceil(totalExecutionTime / workerCount),
-    ...tests.map((test) => test.executionTime)
+    totalExecutionTime / workerCount,
+    maxExecutionTime
   );
 
   return {

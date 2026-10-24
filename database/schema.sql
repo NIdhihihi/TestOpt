@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS projects (
     project_id VARCHAR(50) PRIMARY KEY,
     project_name VARCHAR(150) NOT NULL,
+    archived_at DATETIME NULL,
     description TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -59,10 +60,26 @@ CREATE TABLE IF NOT EXISTS test_coverage (
 CREATE TABLE IF NOT EXISTS code_changes (
     change_id VARCHAR(50) PRIMARY KEY,
     project_id VARCHAR(50) NOT NULL,
+    description TEXT,
+    changed_module_ids JSON,
     time_budget DECIMAL(8,2) NOT NULL,
+    submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (project_id) REFERENCES projects(project_id),
     CHECK (time_budget >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS testing_constraints (
+    project_id VARCHAR(50) PRIMARY KEY,
+    w1 DECIMAL(4,3) NOT NULL DEFAULT 0.350,
+    w2 DECIMAL(4,3) NOT NULL DEFAULT 0.250,
+    w3 DECIMAL(4,3) NOT NULL DEFAULT 0.150,
+    w4 DECIMAL(4,3) NOT NULL DEFAULT 0.250,
+    default_budget DECIMAL(8,2) NOT NULL DEFAULT 15.00,
+    max_workers INT NOT NULL DEFAULT 2,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
 );
 
 
@@ -99,6 +116,7 @@ CREATE TABLE IF NOT EXISTS selected_tests (
     score DECIMAL(12,5) NOT NULL DEFAULT 0,
     selection_rank INT NOT NULL,
     selection_reason TEXT,
+    status VARCHAR(30) NOT NULL DEFAULT 'SELECTED',
     PRIMARY KEY (run_id, test_id),
     FOREIGN KEY (run_id) REFERENCES optimization_runs(run_id),
     FOREIGN KEY (test_id) REFERENCES test_cases(test_id)

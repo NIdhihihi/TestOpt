@@ -1,9 +1,12 @@
 import { Router } from "express";
 import pool from "../db/connection.js";
+import { requireAuth } from "../middleware/auth.js";
 import executionRouter from "../execution/routes.js";
 import catalogRouter from "./catalog.js";
 import authRouter from "./auth.js";
 import optimizationRouter from "./optimization.js";
+
+import sourceRouter from "./source.js";
 
 const router = Router();
 
@@ -14,7 +17,7 @@ router.get("/", (req, res) => {
   });
 });
 
-router.get("/db-test", async (req, res) => {
+router.get("/db-test", requireAuth, async (req, res) => {
   try {
     const [rows] = await pool.query(
       "SELECT module_id, module_name, criticality FROM modules ORDER BY module_id",
@@ -39,5 +42,6 @@ router.use("/optimization", optimizationRouter);
 router.use("/execution", executionRouter);
 router.use("/catalog", catalogRouter);
 router.use("/auth", authRouter);
+router.use("/source", sourceRouter);
 
 export default router;

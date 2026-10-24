@@ -5,8 +5,8 @@ import pool from "../db/connection.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requireProjectRole } from "../middleware/authorization.js";
 import { recordAuditEvent } from "../services/auditService.js";
-import { enqueueExecution } from "../queue/executionQueue.js";
 import { createSchedule } from "./scheduler.js";
+import { RUN_STATES, TEST_STATES, validateRunTransition, transitionRunState, transitionTestState } from "./stateMachine.js";
 
 const router = Router();
 const VALID_STRATEGIES = new Set(["FCFS", "PRIORITY", "GREEDY", "LPT"]);
@@ -52,13 +52,13 @@ router.get("/projects/:projectId/analytics", async (req, res) => {
          WHERE r.project_id = ?`, [projectId],
       ).then(([rows]) => rows),
       pool.query(
-        `SELECT DATE(te.completed_at) AS day,
+        `SELECT DATE_FORMAT(te.completed_at, '%Y-%m-%d') AS day,
                 SUM(te.execution_status = 'PASSED') AS passed,
                 SUM(te.execution_status = 'FAILED') AS failed,
                 SUM(te.execution_status = 'ERROR') AS errors
          FROM test_executions te JOIN optimization_runs r ON r.run_id = te.run_id
          WHERE r.project_id = ? AND te.completed_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
-         GROUP BY DATE(te.completed_at) ORDER BY day`, [projectId],
+         GROUP BY day ORDER BY day`, [projectId],
       ).then(([rows]) => rows),
     ]);
     const total = Number(summary.executionCount);
@@ -68,20 +68,22 @@ router.get("/projects/:projectId/analytics", async (req, res) => {
 
 router.post("/:runId/queue", async (req, res) => {
   try {
-    const [runs] = await pool.query("SELECT run_id AS runId, project_id AS projectId FROM optimization_runs WHERE run_id = ?", [req.params.runId]);
-    if (!runs[0]) return res.status(404).json({ success: false, message: "Optimization run was not found." });
-    const projectAccess = await requireProjectRole(req.auth.sub, runs[0].projectId, ["OWNER", "ADMIN", "TEST_MANAGER", "DEVELOPER"]);
-    const jobId = `JOB_${randomUUID()}`;
-    await pool.query("INSERT INTO execution_jobs (job_id, run_id, requested_by_user_id) VALUES (?, ?, ?)", [jobId, runs[0].runId, req.auth.sub]);
-    try {
-      await enqueueExecution({ jobId, runId: runs[0].runId, strategy: getStrategy(req.body?.strategy) });
-    } catch (error) {
-      await pool.query("UPDATE execution_jobs SET queue_status = 'FAILED', error_message = ? WHERE job_id = ?", ["Redis queue is unavailable", jobId]);
-      return res.status(503).json({ success: false, message: "Execution queue is unavailable. Start Redis and the worker, then retry." });
-    }
-    await recordAuditEvent({ organizationId: projectAccess.organizationId, userId: req.auth.sub, eventType: "EXECUTION_QUEUED", resourceType: "execution_job", resourceId: jobId, details: { runId: runs[0].runId } });
-    return res.status(202).json({ success: true, jobId, runId: runs[0].runId, status: "QUEUED" });
-  } catch (error) { return res.status(error.statusCode ?? 500).json({ success: false, message: error.message || "Execution could not be queued." }); }
+    const [rows] = await pool.query("SELECT project_id FROM optimization_runs WHERE run_id = ?", [req.params.runId]);
+    if (!rows[0]) return res.status(404).json({ success: false, message: "Run was not found." });
+    await requireProjectRole(req.auth.sub, rows[0].project_id);
+    return res.status(422).json({ success: false, message: "Upload the project to execute independently attributed test files. Manual catalog plans support explicitly labeled simulation; a suite exit code cannot establish individual test results." });
+  } catch (error) { return res.status(error.statusCode || 500).json({ success: false, message: error.message }); }
+});
+
+router.get("/:runId/results", async (req, res) => {
+  try {
+    const [runs] = await pool.query("SELECT project_id AS projectId, status FROM optimization_runs WHERE run_id = ?", [req.params.runId]);
+    if (!runs[0]) return res.status(404).json({ success: false, message: "Run was not found." });
+    await requireProjectRole(req.auth.sub, runs[0].projectId);
+    const [results] = await pool.query("SELECT execution_id AS executionId, test_id AS testId, worker_id AS workerId, execution_status AS executionStatus, actual_time AS actualTime FROM test_executions WHERE run_id = ? ORDER BY completed_at, test_id", [req.params.runId]);
+    const [jobs] = await pool.query("SELECT queue_status AS status, error_message AS message FROM execution_jobs WHERE run_id = ? ORDER BY queued_at DESC LIMIT 1", [req.params.runId]);
+    return res.json({ success: true, runId: req.params.runId, status: runs[0].status, results, job: jobs[0] || null });
+  } catch (error) { return res.status(error.statusCode ?? 500).json({ success: false, message: error.message }); }
 });
 
 function getStrategy(value) {
@@ -205,6 +207,8 @@ router.post("/:runId/plan", async (req, res) => {
     const connection = await pool.getConnection();
 
     try {
+      await connection.beginTransaction();
+      await connection.query("SELECT status FROM optimization_runs WHERE run_id = ? FOR UPDATE", [req.params.runId]);
       const { run, plan } = await getPlan(
         connection,
         req.params.runId,
@@ -212,12 +216,16 @@ router.post("/:runId/plan", async (req, res) => {
       );
       const projectAccess = await requireProjectRole(req.auth.sub, run.project_id);
 
-      if (["RUNNING", "COMPLETED"].includes(run.status)) {
+      if (!["SELECTED", "PLAN_READY", "PLAN_REJECTED"].includes(run.status)) {
         return res.status(409).json({
           success: false,
           message: `Cannot preview execution for a run that is ${run.status}`,
         });
       }
+      await transitionRunState(connection, req.params.runId, RUN_STATES.PLAN_READY);
+      const [selected] = await connection.query("SELECT test_id FROM selected_tests WHERE run_id = ?", [req.params.runId]);
+      for (const test of selected) await transitionTestState(connection, req.params.runId, test.test_id, TEST_STATES.ASSIGNED);
+      await connection.commit();
       const approvalToken = randomUUID();
 
       approvedPlans.set(approvalToken, {
@@ -242,6 +250,7 @@ router.post("/:runId/plan", async (req, res) => {
         message: "Review this plan before approving execution.",
       });
     } finally {
+      await connection.rollback();
       connection.release();
     }
   } catch (error) {
@@ -338,9 +347,15 @@ router.post("/:runId/compare", async (req, res) => {
       };
     });
 
-    // Smallest makespan is best for completion time.
+    // Multi-strategy comparative analysis (SRS REQ-4.8.5, REQ-4.10.3)
     const bestMakespan = Math.min(
       ...comparisons.map((item) => item.metrics.makespan)
+    );
+    const bestUtilization = Math.max(
+      ...comparisons.map((item) => item.metrics.workerUtilization)
+    );
+    const bestImbalance = Math.min(
+      ...comparisons.map((item) => item.metrics.imbalance)
     );
 
     return res.json({
@@ -351,6 +366,12 @@ router.post("/:runId/compare", async (req, res) => {
       comparisons,
       bestMakespanStrategies: comparisons
         .filter((item) => item.metrics.makespan === bestMakespan)
+        .map((item) => item.strategy),
+      bestUtilizationStrategies: comparisons
+        .filter((item) => item.metrics.workerUtilization === bestUtilization)
+        .map((item) => item.strategy),
+      bestImbalanceStrategies: comparisons
+        .filter((item) => item.metrics.imbalance === bestImbalance)
         .map((item) => item.strategy),
       message:
         "Strategies compared using the same selected tests and available workers. No execution results or run status were changed.",
@@ -446,8 +467,10 @@ router.post("/:runId", async (req, res) => {
       });
     }
     const projectAccess = await requireProjectRole(req.auth.sub, runs[0].project_id);
+    const [activeProject] = await startConnection.query("SELECT archived_at FROM projects WHERE project_id = ?", [runs[0].project_id]);
+    if (activeProject[0]?.archived_at) { await startConnection.rollback(); return res.status(409).json({ success: false, message: "Project is archived." }); }
 
-    if (["RUNNING", "COMPLETED"].includes(runs[0].status)) {
+    if (["RUNNING", "EXECUTING", "COMPLETED"].includes(runs[0].status)) {
       await startConnection.rollback();
       return res.status(409).json({
         success: false,
@@ -455,6 +478,11 @@ router.post("/:runId", async (req, res) => {
       });
     }
 
+    const [queued] = await startConnection.query("SELECT job_id FROM execution_jobs WHERE run_id = ? AND queue_status IN ('QUEUED', 'PROCESSING')", [runId]);
+    if (queued.length) {
+      await startConnection.rollback();
+      return res.status(409).json({ success: false, message: "This run has a queued execution." });
+    }
     const [existing] = await startConnection.query(
       `SELECT test_id
        FROM test_executions
@@ -532,12 +560,16 @@ router.post("/:runId", async (req, res) => {
     }));
     workerIds = workers.map((worker) => worker.workerId);
 
+    validateRunTransition(runs[0].status, RUN_STATES.EXECUTING);
+
     await startConnection.query(
       `UPDATE optimization_runs
-       SET status = 'RUNNING', scheduling_strategy = ?
+       SET status = 'EXECUTING', scheduling_strategy = ?
        WHERE run_id = ?`,
       [strategy, runId]
     );
+
+    for (const test of tests) await transitionTestState(startConnection, runId, test.testId, TEST_STATES.RUNNING);
 
     await startConnection.commit();
     await recordAuditEvent({ organizationId: projectAccess.organizationId, userId: req.auth.sub, eventType: "EXECUTION_STARTED", resourceType: "optimization_run", resourceId: runId, details: { strategy } });
@@ -625,6 +657,9 @@ router.post("/:runId", async (req, res) => {
             [test.testId, failedIncrement, completedAt]
           );
 
+          await transitionTestState(connection, runId, test.testId, executionStatus);
+          await transitionTestState(connection, runId, test.testId, TEST_STATES.RECORDED);
+
           await connection.commit();
 
           executionResults.push({
@@ -676,15 +711,9 @@ router.post("/:runId", async (req, res) => {
       // ERROR is a run-level signal here; successfully committed results
       // remain persisted. This route does not fabricate results for
       // tests that could not be recorded.
-      await finishConnection.query(
-        `UPDATE optimization_runs SET status = 'ERROR' WHERE run_id = ?`,
-        [runId]
-      );
+      await transitionRunState(finishConnection, runId, RUN_STATES.ERROR);
     } else {
-      await finishConnection.query(
-        `UPDATE optimization_runs SET status = 'COMPLETED' WHERE run_id = ?`,
-        [runId]
-      );
+      await transitionRunState(finishConnection, runId, RUN_STATES.COMPLETED);
     }
 
     await finishConnection.commit();
@@ -718,6 +747,167 @@ router.post("/:runId", async (req, res) => {
     ? "Execution encountered worker or result-recording errors. Check the returned results and run history."
     : "Simulated execution completed and results were saved.",
   });
+});
+
+router.post("/:runId/reject", async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const { runId } = req.params;
+    const [runs] = await connection.query(
+      "SELECT run_id AS runId, project_id AS projectId, status FROM optimization_runs WHERE run_id = ? FOR UPDATE",
+      [runId]
+    );
+    if (!runs[0]) {
+      return res.status(404).json({ success: false, message: `Optimization run ${runId} was not found.` });
+    }
+    const run = runs[0];
+    const projectAccess = await requireProjectRole(req.auth.sub, run.projectId, ["OWNER", "ADMIN", "TEST_MANAGER", "DEVELOPER"]);
+
+    // Validate state transition using stateMachine.js
+    validateRunTransition(run.status, RUN_STATES.PLAN_REJECTED);
+
+    const [jobs] = await connection.query("SELECT job_id FROM execution_jobs WHERE run_id = ? AND queue_status IN ('QUEUED', 'PROCESSING')", [runId]);
+    if (jobs.length) return res.status(409).json({ success: false, message: "Cannot reject a queued execution." });
+
+    // Invalidate approval token if any
+    for (const [token, data] of approvedPlans.entries()) {
+      if (data.runId === runId) {
+        approvedPlans.delete(token);
+      }
+    }
+
+    await connection.query(
+      "UPDATE optimization_runs SET status = ? WHERE run_id = ?",
+      [RUN_STATES.PLAN_REJECTED, runId]
+    );
+
+    await connection.commit();
+
+    await recordAuditEvent({
+      organizationId: projectAccess.organizationId,
+      userId: req.auth.sub,
+      eventType: "PLAN_REJECTED",
+      resourceType: "optimization_run",
+      resourceId: runId,
+      details: { reason: req.body?.reason || "Explicitly rejected by user" },
+    });
+
+    return res.json({
+      success: true,
+      runId,
+      status: RUN_STATES.PLAN_REJECTED,
+      message: "Optimization plan has been explicitly rejected.",
+    });
+  } catch (error) {
+    await connection.rollback();
+    return res.status(error.statusCode ?? 500).json({ success: false, message: error.message });
+  } finally {
+    await connection.rollback();
+    connection.release();
+  }
+});
+
+router.get("/:runId/export", async (req, res) => {
+  try {
+    const { runId } = req.params;
+    const [runs] = await pool.query(
+      `SELECT r.run_id AS runId, r.project_id AS projectId, p.project_name AS projectName,
+              r.selection_algorithm AS selectionAlgorithm, r.scheduling_strategy AS schedulingStrategy,
+              r.time_budget AS timeBudget, r.worker_count AS workerCount, r.status,
+              r.created_at AS createdAt,
+              c.change_id AS changeId, c.description AS changeDescription
+       FROM optimization_runs r
+       JOIN projects p ON p.project_id = r.project_id
+       LEFT JOIN code_changes c ON c.change_id = r.change_id
+       WHERE r.run_id = ?`,
+      [runId]
+    );
+
+    if (!runs[0]) {
+      return res.status(404).json({ success: false, message: `Optimization run ${runId} was not found.` });
+    }
+    const run = runs[0];
+    await requireProjectRole(req.auth.sub, run.projectId);
+
+    const [testRows] = await pool.query(
+      `SELECT st.test_id AS testId, tc.test_name AS testName, tc.priority,
+              tc.execution_time AS executionTime, st.score, st.selection_rank AS selectionRank,
+              st.selection_reason AS selectionReason, st.status AS testStatus,
+              te.worker_id AS workerId, te.actual_time AS actualTime,
+              te.execution_status AS executionStatus, te.started_at AS startedAt, te.completed_at AS completedAt
+       FROM selected_tests st
+       JOIN test_cases tc ON tc.test_id = st.test_id
+       LEFT JOIN test_executions te ON te.run_id = st.run_id AND te.test_id = st.test_id
+       WHERE st.run_id = ?
+       ORDER BY st.selection_rank ASC`,
+      [runId]
+    );
+
+    function escapeCsv(field) {
+      if (field === null || field === undefined) return "";
+      const raw = String(field);
+      const stringValue = typeof field === "string" && /^[=+@\-\t\r]/.test(raw) ? `'${raw}` : raw;
+      if (stringValue.includes(",") || stringValue.includes('"') || stringValue.includes("\n") || stringValue.includes("\r")) {
+        return `"${stringValue.replace(/"/g, '""')}"`;
+      }
+      return stringValue;
+    }
+
+    const csvLines = [];
+    csvLines.push("=== TESTOPT OPTIMIZATION RUN REPORT ===");
+    csvLines.push(`Run ID,${escapeCsv(run.runId)}`);
+    csvLines.push(`Project ID,${escapeCsv(run.projectId)}`);
+    csvLines.push(`Project Name,${escapeCsv(run.projectName)}`);
+    csvLines.push(`Status,${escapeCsv(run.status)}`);
+    csvLines.push(`Selection Algorithm,${escapeCsv(run.selectionAlgorithm)}`);
+    csvLines.push(`Scheduling Strategy,${escapeCsv(run.schedulingStrategy || "N/A")}`);
+    csvLines.push(`Time Budget (min),${escapeCsv(run.timeBudget)}`);
+    csvLines.push(`Worker Count,${escapeCsv(run.workerCount)}`);
+    csvLines.push(`Created At,${escapeCsv(run.createdAt)}`);
+    if (run.changeDescription) {
+      csvLines.push(`Change Description,${escapeCsv(run.changeDescription)}`);
+    }
+    csvLines.push("");
+    csvLines.push("=== TEST DISTRIBUTION & EXECUTION SCHEDULE ===");
+    csvLines.push("Note,Worker assignments and durations below are recorded execution results; preview assignments are not persisted. Project runner outcomes apply to the configured suite command.");
+    csvLines.push([
+      "Rank",
+      "Test ID",
+      "Test Name",
+      "Priority",
+      "Execution Time (min)",
+      "Score",
+      "Assigned Worker",
+      "Test Status",
+      "Execution Status",
+      "Actual Duration (min)",
+      "Selection Reason",
+    ].map(escapeCsv).join(","));
+
+    for (const test of testRows) {
+      csvLines.push([
+        test.selectionRank,
+        test.testId,
+        test.testName,
+        test.priority,
+        test.executionTime,
+        Number(test.score).toFixed(4),
+        test.workerId || (test.executionStatus ? "Project runner" : "Unassigned"),
+        test.testStatus,
+        test.executionStatus || "N/A",
+        test.actualTime !== null ? Number(test.actualTime).toFixed(2) : "N/A",
+        test.selectionReason || "",
+      ].map(escapeCsv).join(","));
+    }
+
+    const csvContent = csvLines.join("\r\n");
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="optimization-report-${runId}.csv"`);
+    return res.status(200).send(csvContent);
+  } catch (error) {
+    return res.status(error.statusCode ?? 500).json({ success: false, message: error.message });
+  }
 });
 
 export default router;

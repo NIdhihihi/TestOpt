@@ -86,7 +86,7 @@ The optimization module provides:
 
 - `runId`
 - `projectId`
-- `selectionAlgorithm` (`GREEDY` or `KNAPSACK`)
+- `selectionAlgorithm` (`GREEDY`, `KNAPSACK`, or `BRANCH_AND_BOUND`)
 - `selectedTests`
 - `workerCount`
 - `timeBudget`
@@ -134,3 +134,7 @@ Worker timeout or unavailability must not increase a test's failure count.
 - Shravani implements scheduling, simulated execution, and execution analytics.
 - Each member must follow these contracts when integrating their module.
 - Shared contract changes require agreement from all three members.
+
+## Uploaded-project adapter
+
+The /api/source project-scoped endpoints store immutable versions and plans. Test units are files for NODE_TEST_FILES; statuses PLANNED/QUEUED/EXECUTING/COMPLETED/INCOMPLETE/FAILED/ERROR identify source plan lifecycle. source_versions hold content hashes, analysis and coverage evidence; source_plans hold worker assignments and independently attributed results; source_test_history excludes infrastructure errors from execution/failure counts. Passing subsets are conditional evidence, not a guarantee about skipped checks. See AGREED_SCOPE.md for the user-approved contract revision.

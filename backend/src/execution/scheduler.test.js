@@ -186,3 +186,37 @@ test("rejects invalid priority and no available workers", () => {
     /No available workers/
   );
 });
+
+test("computes complete scheduling metrics (Cmax, LB, utilization, imbalance) for all schedulers", () => {
+  // Tests: T1=8, T2=3, T3=5, T4=2 -> total = 18, max_pj = 8.
+  // 2 workers -> ceil(18/2) = 9. LB = max(9, 8) = 9.
+  for (const strategy of ["FCFS", "PRIORITY", "GREEDY", "LPT"]) {
+    const res = createSchedule({ selectedTests, workers, strategy });
+    const { metrics, workers: wSummaries } = res;
+
+    assert.equal(metrics.totalExecutionTime, 18);
+    assert.equal(metrics.totalTests, 4);
+    assert.equal(metrics.workerCount, 2);
+    assert.equal(metrics.lowerBound, 9); // max(ceil(18/2), 8) = 9
+
+    const maxLoad = Math.max(...wSummaries.map((w) => w.estimatedLoad));
+    const minLoad = Math.min(...wSummaries.map((w) => w.estimatedLoad));
+    assert.equal(metrics.makespan, maxLoad);
+    assert.equal(metrics.imbalance, Number((maxLoad - minLoad).toFixed(2)));
+
+    const expectedUtil = Number(((18 / (2 * maxLoad)) * 100).toFixed(2));
+    assert.equal(metrics.workerUtilization, expectedUtil);
+    assert.ok(metrics.makespan >= metrics.lowerBound, "Makespan must be >= theoretical Lower Bound");
+  }
+});
+
+
+
+test("fractional durations never produce a lower bound above makespan", () => {
+  const result = createSchedule({
+    selectedTests: [0.1, 0.2, 0.3].map((executionTime, i) => ({ testId: `F${i}`, executionTime, priority: "HIGH", score: 1 })),
+    workers, strategy: "LPT",
+  });
+  assert.ok(Math.abs(result.metrics.lowerBound - 0.3) < 1e-9);
+  assert.ok(result.metrics.lowerBound <= result.metrics.makespan + 1e-9);
+});

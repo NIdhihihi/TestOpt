@@ -226,3 +226,13 @@ test("checkChangedModulesCoverage identifies uncovered directly changed modules"
   assert.equal(completeResult.allCovered, true);
   assert.deepEqual(completeResult.uncoveredChanged, []);
 });
+
+
+test("branch-and-bound reports capped search rather than claiming optimality", () => {
+  let search;
+  const candidates = [1, 2, 3].map(i => ({ testId: `C${i}`, score: i, executionTime: 2, efficiency: i / 2 }));
+  selectBranchAndBound(candidates, 3, { maxNodes: 0, onComplete: info => { search = info; } });
+  assert.equal(search.provenOptimal, false);
+  selectBranchAndBound(candidates, 3, { onComplete: info => { search = info; } });
+  assert.equal(search.provenOptimal, true);
+});

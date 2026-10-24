@@ -129,3 +129,11 @@ Never commit `.env` files, database passwords, or other secrets. Each team membe
 ## Current Status
 
 Project structure, initial MySQL schema and sample data, backend health endpoint, and database connection test are set up. Feature implementation is in progress.
+
+## Upload-first workflow
+
+Start with [the upload workflow guide](docs/UPLOAD_WORKFLOW.md) and [the agreed SRS/UML/DFD scope addendum](docs/AGREED_SCOPE.md). Progress and acceptance evidence are tracked in TASKS.md.
+
+Supported source folders contain dependency-free JavaScript and node:test files. TestOpt discovers imports/tests, compares uploaded versions, chooses a selection algorithm, requests approval, and executes assigned test files independently inside restricted Docker containers. A complete passing baseline is required before narrowing a later version. Unsupported projects remain inspectable with an explanation and a manual-catalog fallback. Random is excluded; Greedy, DP, and optional bounded Branch and Bound remain.
+
+Existing installations: run `npm run db:upgrade` in backend to add archive/source tables without removing data. Pull `node:24-alpine`, start Redis/API/worker, and start the frontend. Source plans are separate from legacy manual-catalog simulation. Archive projects to retain their history.

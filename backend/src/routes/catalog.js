@@ -59,15 +59,15 @@ function parseCsv(csvText) {
 function csvValue(row, key, maxLength = 150) { return text(row[key], `${key} on line ${row.line}`, maxLength); }
 
 async function projectExists(projectId) {
-  const [projects] = await pool.query("SELECT project_id FROM projects WHERE project_id = ?", [projectId]);
+  const [projects] = await pool.query("SELECT project_id FROM projects WHERE project_id = ? AND archived_at IS NULL", [projectId]);
   return projects.length > 0;
 }
 
 router.get("/projects", async (req, res) => {
   try {
     const [projects] = await pool.query(
-      "SELECT p.project_id AS projectId, p.project_name AS projectName, p.description, p.organization_id AS organizationId FROM projects p JOIN organization_members om ON om.organization_id = p.organization_id WHERE om.user_id = ? ORDER BY p.project_name",
-      [req.auth.sub],
+      "SELECT p.project_id AS projectId, p.project_name AS projectName, p.description, p.organization_id AS organizationId, p.archived_at AS archivedAt FROM projects p JOIN organization_members om ON om.organization_id = p.organization_id WHERE om.user_id = ? AND (? = 1 OR p.archived_at IS NULL) ORDER BY p.project_name",
+      [req.auth.sub, req.query.includeArchived === "true" ? 1 : 0],
     );
     return res.json({ success: true, projects });
   } catch (error) {
@@ -79,6 +79,9 @@ router.get("/projects", async (req, res) => {
 router.get("/projects/:projectId", async (req, res) => {
   try {
     const projectId = req.params.projectId;
+    if (!(await projectExists(projectId))) {
+      return res.status(404).json({ success: false, message: "Project was not found." });
+    }
     await requireProjectRole(req.auth.sub, projectId);
     const [projects, modules, dependencies, tests, coverage] = await Promise.all([
       pool.query("SELECT project_id AS projectId, project_name AS projectName, description FROM projects WHERE project_id = ?", [projectId]).then(([rows]) => rows),
@@ -90,6 +93,9 @@ router.get("/projects/:projectId", async (req, res) => {
     if (projects.length === 0) return res.status(404).json({ success: false, message: "Project was not found." });
     return res.json({ success: true, project: projects[0], modules, dependencies, tests, coverage });
   } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ success: false, message: error.message });
+    }
     console.error("Project catalog retrieval failed:", error.message);
     return res.status(500).json({ success: false, message: "Project data could not be retrieved." });
   }
@@ -134,6 +140,124 @@ router.post("/projects", async (req, res) => {
     return res.status(201).json({ success: true, project: { projectId, organizationId, projectName, description } });
   } catch (error) {
     return res.status(400).json({ success: false, message: error.message || "Project could not be created." });
+  }
+});
+
+router.delete("/projects/:projectId", async (req, res) => {
+  let connection;
+  try {
+    const { projectId } = req.params;
+    await requireProjectRole(req.auth.sub, projectId, ["OWNER", "ADMIN"]);
+    if (!(await projectExists(projectId))) {
+      return res.status(404).json({ success: false, message: "Project was not found." });
+    }
+
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    await connection.query("SELECT project_id FROM projects WHERE project_id = ? FOR UPDATE", [projectId]);
+    const [activeRuns] = await connection.query("SELECT run_id FROM optimization_runs WHERE project_id = ? AND status IN ('RUNNING', 'EXECUTING') FOR UPDATE", [projectId]);
+    const [activeJobs] = await connection.query("SELECT ej.job_id FROM execution_jobs ej JOIN optimization_runs r ON r.run_id = ej.run_id WHERE r.project_id = ? AND ej.queue_status IN ('QUEUED', 'PROCESSING') FOR UPDATE", [projectId]);
+    const [sourceJobs] = await connection.query("SELECT plan_id FROM source_plans WHERE project_id = ? AND status IN ('QUEUED', 'EXECUTING') FOR UPDATE", [projectId]);
+    if (activeRuns.length || activeJobs.length || sourceJobs.length) {
+      const error = new Error("Cannot delete a project with active or queued executions.");
+      error.statusCode = 409;
+      throw error;
+    }
+    await connection.query("UPDATE projects SET archived_at = NOW() WHERE project_id = ?", [projectId]);
+    await connection.commit();
+    return res.json({ success: true, message: "Project archived. Run history and test data are preserved." });
+  } catch (error) {
+    if (connection) await connection.rollback();
+    return res.status(error.statusCode ?? 500).json({ success: false, message: error.message || "Project could not be deleted." });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+router.get("/projects/:projectId/constraints", async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    await requireProjectRole(req.auth.sub, projectId);
+    const [rows] = await pool.query(
+      "SELECT project_id AS projectId, w1, w2, w3, w4, default_budget AS defaultBudget, max_workers AS maxWorkers, updated_at AS updatedAt FROM testing_constraints WHERE project_id = ?",
+      [projectId]
+    );
+    if (!rows[0]) {
+      return res.json({
+        success: true,
+        constraints: {
+          projectId,
+          w1: 0.35,
+          w2: 0.25,
+          w3: 0.15,
+          w4: 0.25,
+          defaultBudget: 15.0,
+          maxWorkers: 2,
+          isDefault: true,
+        },
+      });
+    }
+    return res.json({
+      success: true,
+      constraints: {
+        projectId: rows[0].projectId,
+        w1: Number(rows[0].w1),
+        w2: Number(rows[0].w2),
+        w3: Number(rows[0].w3),
+        w4: Number(rows[0].w4),
+        defaultBudget: Number(rows[0].defaultBudget),
+        maxWorkers: Number(rows[0].maxWorkers),
+        updatedAt: rows[0].updatedAt,
+      },
+    });
+  } catch (error) {
+    return res.status(error.statusCode ?? 500).json({ success: false, message: error.message });
+  }
+});
+
+router.put("/projects/:projectId/constraints", async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    await requireProjectRole(req.auth.sub, projectId, ["OWNER", "ADMIN", "TEST_MANAGER"]);
+    if (!(await projectExists(projectId))) {
+      return res.status(404).json({ success: false, message: "Project was not found." });
+    }
+
+    const w1 = numberInRange(req.body.w1 ?? 0.35, "w1", 0, 1);
+    const w2 = numberInRange(req.body.w2 ?? 0.25, "w2", 0, 1);
+    const w3 = numberInRange(req.body.w3 ?? 0.15, "w3", 0, 1);
+    const w4 = numberInRange(req.body.w4 ?? 0.25, "w4", 0, 1);
+    if ([w1, w2, w3, w4].some(value => Math.abs(value * 1000 - Math.round(value * 1000)) > 1e-8)) throw new Error("Weights support at most three decimal places.");
+    const sum = Number((w1 + w2 + w3 + w4).toFixed(4));
+    if (Math.abs(sum - 1.0) > 0.0005) {
+      throw new Error(`Weights w1, w2, w3, w4 must sum to 1.0 (received sum: ${sum}).`);
+    }
+
+    const defaultBudget = numberInRange(req.body.defaultBudget ?? 15.0, "defaultBudget", 1, 100000);
+    const maxWorkers = numberInRange(req.body.maxWorkers ?? 2, "maxWorkers", 1, 64);
+
+    if (!Number.isInteger(maxWorkers)) throw new Error("maxWorkers must be an integer.");
+
+    await pool.query(
+      `INSERT INTO testing_constraints (project_id, w1, w2, w3, w4, default_budget, max_workers)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         w1 = VALUES(w1),
+         w2 = VALUES(w2),
+         w3 = VALUES(w3),
+         w4 = VALUES(w4),
+         default_budget = VALUES(default_budget),
+         max_workers = VALUES(max_workers)`,
+      [projectId, w1, w2, w3, w4, defaultBudget, maxWorkers]
+    );
+
+    return res.json({
+      success: true,
+      constraints: { projectId, w1, w2, w3, w4, defaultBudget, maxWorkers },
+    });
+  } catch (error) {
+    return res.status(error.statusCode ?? 400).json({ success: false, message: error.message });
   }
 });
 
@@ -270,27 +394,37 @@ router.post("/projects/:projectId/import", async (req, res) => {
   } finally { if (connection) connection.release(); }
 });
 
+async function requireAdminUser(userId) {
+  const [users] = await pool.query("SELECT role FROM users WHERE user_id = ?", [userId]);
+  if (users[0]?.role === "ADMIN") return true;
+  const error = new Error("Only a platform administrator can manage shared workers.");
+  error.statusCode = 403;
+  throw error;
+}
+
 router.post("/workers", async (req, res) => {
   try {
+    await requireAdminUser(req.auth.sub);
     const workerStatus = (req.body.workerStatus || "AVAILABLE").toUpperCase();
     if (!workerStatuses.has(workerStatus)) throw new Error("Use AVAILABLE, BUSY, or UNAVAILABLE for workerStatus.");
     const workerId = generatedId("W");
     await pool.query("INSERT INTO workers (worker_id, worker_status) VALUES (?, ?)", [workerId, workerStatus]);
     return res.status(201).json({ success: true, worker: { workerId, workerStatus } });
   } catch (error) {
-    return res.status(400).json({ success: false, message: error.message });
+    return res.status(error.statusCode ?? 400).json({ success: false, message: error.message });
   }
 });
 
 router.put("/workers/:workerId", async (req, res) => {
   try {
+    await requireAdminUser(req.auth.sub);
     const workerStatus = text(req.body.workerStatus, "workerStatus", 20).toUpperCase();
     if (!workerStatuses.has(workerStatus)) throw new Error("Use AVAILABLE, BUSY, or UNAVAILABLE for workerStatus.");
     const [result] = await pool.query("UPDATE workers SET worker_status = ? WHERE worker_id = ?", [workerStatus, req.params.workerId]);
     if (!result.affectedRows) return res.status(404).json({ success: false, message: "Worker was not found." });
     return res.json({ success: true, worker: { workerId: req.params.workerId, workerStatus } });
   } catch (error) {
-    return res.status(400).json({ success: false, message: error.message });
+    return res.status(error.statusCode ?? 400).json({ success: false, message: error.message });
   }
 });
 

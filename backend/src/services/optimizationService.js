@@ -347,10 +347,15 @@ export function selectGreedy(candidates, timeBudget) {
     // Update reason with dynamic marginal value at time of selection
     const reasonAtSelection = generateSelectionReason(cand, coveredModules, omegaMap, totalOmega, weights, changedSet);
     const scoreAtSelection = calculateTestValue(cand, coveredModules, omegaMap, totalOmega, weights);
+    const marginalAtSelection = calculateMarginalCoverage(cand.coveredModuleIds, coveredModules, omegaMap, totalOmega);
 
     selected.push({
       ...cand,
       score: scoreAtSelection,
+      factors: {
+        ...cand.factors,
+        marginalCoverage: Number(marginalAtSelection.toFixed(5)),
+      },
       reason: reasonAtSelection,
     });
 
@@ -380,7 +385,8 @@ export function selectGreedy(candidates, timeBudget) {
 
 /**
  * Branch and Bound Exact Selection (Combinatorial State-Space Search with LP Relaxation Bound)
- * Solves Formulation F1 with O(n) memory and early branch pruning.
+ * Solves the static Formulation F1 with bounded search and early branch pruning.
+ * Copying partial combinations may retain O(n^2) references in the DFS frontier.
  */
 export function selectBranchAndBound(candidates, timeBudget, options = {}) {
   if (!candidates || candidates.length === 0 || timeBudget <= 0) return [];
@@ -388,6 +394,7 @@ export function selectBranchAndBound(candidates, timeBudget, options = {}) {
   // REQ-4.7.7: If budget covers all candidates, select all
   const totalCandidateTime = candidates.reduce((sum, c) => sum + c.executionTime, 0);
   if (totalCandidateTime <= timeBudget) {
+    options.onComplete?.({ provenOptimal: true, nodesExplored: 0 });
     return [...candidates].sort((a, b) => {
       if (Math.abs(b.efficiency - a.efficiency) > 1e-9) return b.efficiency - a.efficiency;
       if (a.executionTime !== b.executionTime) return a.executionTime - b.executionTime;
@@ -426,41 +433,56 @@ export function selectBranchAndBound(candidates, timeBudget, options = {}) {
   let bestCombination = [];
   let nodesExplored = 0;
 
-  function branch(index, currentVal, currentWeight, currentCombination) {
+  // Iterative DFS stack to avoid V8 call stack overflow on massive candidate pools (n >= 5000)
+  const stack = [{ index: 0, currentVal: 0, currentWeight: 0, combination: [] }];
+
+  let capped = false;
+  while (stack.length > 0) {
     nodesExplored++;
     if (nodesExplored > maxNodes || Date.now() - startTime > timeoutMs) {
-      return;
+      capped = true;
+      break;
     }
+
+    const { index, currentVal, currentWeight, combination } = stack.pop();
 
     if (currentVal > bestVal) {
       bestVal = currentVal;
-      bestCombination = [...currentCombination];
+      bestCombination = combination;
     }
 
-    if (index >= items.length) return;
+    if (index >= items.length) continue;
 
     const remBudget = timeBudget - currentWeight;
     const upperBound = computeUpperBound(index, currentVal, remBudget);
 
     // Prune subtree if upper bound cannot exceed best known value
     if (upperBound <= bestVal + 1e-9) {
-      return;
+      continue;
     }
 
-    // Branch 1: Include item[index]
     const nextItem = items[index];
-    if (currentWeight + nextItem.executionTime <= timeBudget) {
-      currentCombination.push(nextItem);
-      branch(index + 1, currentVal + nextItem.score, currentWeight + nextItem.executionTime, currentCombination);
-      currentCombination.pop();
-    }
 
-    // Branch 2: Exclude item[index]
-    branch(index + 1, currentVal, currentWeight, currentCombination);
+    // Branch 2: Exclude item[index] (push first so Include branch is explored first)
+    stack.push({
+      index: index + 1,
+      currentVal,
+      currentWeight,
+      combination,
+    });
+
+    // Branch 1: Include item[index] (pushed second, popped first)
+    if (currentWeight + nextItem.executionTime <= timeBudget) {
+      stack.push({
+        index: index + 1,
+        currentVal: currentVal + nextItem.score,
+        currentWeight: currentWeight + nextItem.executionTime,
+        combination: [...combination, nextItem],
+      });
+    }
   }
 
-  branch(0, 0, 0, []);
-
+  options.onComplete?.({ provenOptimal: !capped, nodesExplored });
   return bestCombination;
 }
 
@@ -478,8 +500,8 @@ export function selectKnapsack(candidates, timeBudget, sizeLimit = DP_SIZE_LIMIT
   }
 
   const scale = 100;
-  const capacity = Math.round(timeBudget * scale);
-  const instanceSize = candidates.length * capacity;
+  const capacity = Math.floor(timeBudget * scale + 1e-9);
+  const instanceSize = (candidates.length + 1) * (capacity + 1);
 
   // REQ-4.7.5: Size limit guard
   if (instanceSize > sizeLimit) {
@@ -489,7 +511,7 @@ export function selectKnapsack(candidates, timeBudget, sizeLimit = DP_SIZE_LIMIT
     throw error;
   }
 
-  const weights = candidates.map((candidate) => Math.round(candidate.executionTime * scale));
+  const weights = candidates.map((candidate) => Math.ceil(candidate.executionTime * scale - 1e-9));
   const table = Array.from({ length: candidates.length + 1 }, () => Array(capacity + 1).fill(0));
 
   for (let candidateIndex = 1; candidateIndex <= candidates.length; candidateIndex += 1) {

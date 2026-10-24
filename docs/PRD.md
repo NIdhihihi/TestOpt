@@ -28,3 +28,7 @@ TestOpt selects and schedules the most relevant tests after a code change.
 - Authorized users can configure a project catalog.
 - A change produces a valid selected test set within the requested budget.
 - Users can review, execute, and audit a run.
+
+## Agreed upload-first revision
+
+AGREED_SCOPE.md supersedes the earlier manual-only assumptions. Supported JavaScript/node:test uploads are analyzed without execution; versions identify changed files, automatic policy chooses Greedy/DP with optional bounded B&B, and approved files execute independently in restricted containers. Random is excluded. Package-dependent projects and Git integration require subsequent adapters. See UPLOAD_WORKFLOW.md.

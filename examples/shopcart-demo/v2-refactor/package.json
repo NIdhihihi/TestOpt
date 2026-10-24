@@ -1,0 +1,11 @@
+{
+  "name": "shopcart-demo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A dependency-free shopping cart and checkout library for TestOpt.",
+  "scripts": {
+    "test": "node --test",
+    "demo": "node --input-type=module -e \"import {checkout} from './src/checkout.js'; console.log(JSON.stringify(checkout([{sku:'BOOK',priceCents:2500,quantity:2}],'SAVE10'),null,2))\""
+  }
+}
