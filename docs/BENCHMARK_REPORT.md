@@ -1,5 +1,7 @@
 # TestOpt Benchmark Report
 
+Historical results: this report predates the step-3 duration-precision fixes. Its runtime observations and dense-DP memory/guard model do not characterize the current GCD/sparse DP implementation. Rebaseline performance and memory separately before making current performance claims; the recorded numbers below have not been regenerated during algorithm-correctness verification.
+
 Generated: 2026-10-24T12:10:27.238Z / v24.11.1 / win32 x64
 
 ## Method

@@ -1,3 +1,5 @@
+import { assertSelectionBudget, budgetMilliseconds, durationMilliseconds, millisecondsToMinutes, selectedDurationMinutes, sumMilliseconds } from './duration.js';
+
 export const DEFAULT_WEIGHTS = {
   w1: 0.35, // Relevance
   w2: 0.25, // Criticality
@@ -6,7 +8,7 @@ export const DEFAULT_WEIGHTS = {
 };
 
 export const DEFAULT_ALPHA = 0.5; // Damping factor for indirectly affected modules
-export const DP_SIZE_LIMIT = 1_000_000; // Default capacity limit (n * budget_scale)
+export const DP_SIZE_LIMIT = 1_000_000; // Dense cells or cumulative sparse retained states.
 
 function toNumber(value, fallback = 0) {
   const number = Number(value);
@@ -146,14 +148,14 @@ export function calculateTestValue(candidate, selectedCoveredModuleSet, omegaMap
 
 export function calculateEfficiency(candidate, selectedCoveredModuleSet, omegaMap, totalOmega, weights = DEFAULT_WEIGHTS) {
   const value = calculateTestValue(candidate, selectedCoveredModuleSet, omegaMap, totalOmega, weights);
-  return candidate.executionTime > 0 ? value / candidate.executionTime : 0;
+  return candidate.executionTime > 0 ? value / millisecondsToMinutes(durationMilliseconds(candidate.executionTime)) : 0;
 }
 
 export function generateSelectionReason(candidate, coveredModules, omegaMap, totalOmega, weights = DEFAULT_WEIGHTS, changedSet = new Set()) {
   const marginalFraction = calculateMarginalCoverage(candidate.coveredModuleIds, coveredModules, omegaMap, totalOmega);
   const marginalPct = Math.round(marginalFraction * 100);
   const valueAtSelection = calculateTestValue(candidate, coveredModules, omegaMap, totalOmega, weights);
-  const effAtSelection = candidate.executionTime > 0 ? valueAtSelection / candidate.executionTime : 0;
+  const effAtSelection = candidate.executionTime > 0 ? valueAtSelection / millisecondsToMinutes(durationMilliseconds(candidate.executionTime)) : 0;
 
   const moduleTags = (candidate.coveredModuleIds ?? [])
     .map((modId) => `${modId}${changedSet.has(modId) ? " (changed)" : " (affected)"}`)
@@ -225,7 +227,7 @@ export function buildCandidates({
   return activeCandidates.map((test) => {
     const relevantCoverage = coverageByTest.get(test.test_id) ?? [];
     const coveredModuleIds = relevantCoverage.map((entry) => entry.module_id);
-    const executionTime = toNumber(test.execution_time, 1);
+    const executionTime = millisecondsToMinutes(durationMilliseconds(toNumber(test.execution_time, 1)));
 
     // Factor 1: Relevance (normalized by rmax)
     const rawRel = rawRelevanceByTest.get(test.test_id) ?? 0;
@@ -293,13 +295,15 @@ export function selectGreedy(candidates, timeBudget) {
   if (!candidates || candidates.length === 0 || timeBudget <= 0) return [];
 
   // REQ-4.7.7: If budget covers all candidates, select all candidates
-  const totalCandidateTime = candidates.reduce((sum, c) => sum + c.executionTime, 0);
-  if (totalCandidateTime <= timeBudget) {
-    return [...candidates].sort((a, b) => {
+  const budget = budgetMilliseconds(timeBudget);
+  const costs = new Map(candidates.map(candidate => [candidate, durationMilliseconds(candidate.executionTime)]));
+  const totalCandidateTime = sumMilliseconds(costs.values());
+  if (totalCandidateTime <= budget) {
+    return assertSelectionBudget([...candidates].sort((a, b) => {
       if (Math.abs(b.efficiency - a.efficiency) > 1e-9) return b.efficiency - a.efficiency;
       if (a.executionTime !== b.executionTime) return a.executionTime - b.executionTime;
       return a.testId.localeCompare(b.testId);
-    });
+    }), timeBudget);
   }
 
   const metadata = candidates[0]?.metadata;
@@ -319,19 +323,20 @@ export function selectGreedy(candidates, timeBudget) {
   };
 
   const pq = new MaxHeap(comparator);
+  const emptyCoverage = new Set();
   for (const cand of candidates) {
-    pq.push({ efficiency: cand.efficiency, candidate: cand });
+    pq.push({ efficiency: calculateEfficiency(cand, emptyCoverage, omegaMap, totalOmega, weights), candidate: cand });
   }
 
   const selected = [];
-  let remainingBudget = timeBudget;
+  let remainingBudget = budget;
   const coveredModules = new Set();
 
   while (!pq.isEmpty()) {
     const top = pq.pop();
     const cand = top.candidate;
 
-    if (cand.executionTime > remainingBudget) {
+    if (costs.get(cand) > remainingBudget) {
       continue; // never fits in remaining budget
     }
 
@@ -359,7 +364,7 @@ export function selectGreedy(candidates, timeBudget) {
       reason: reasonAtSelection,
     });
 
-    remainingBudget = Number((remainingBudget - cand.executionTime).toFixed(2));
+    remainingBudget -= costs.get(cand);
     for (const modId of cand.coveredModuleIds) {
       coveredModules.add(modId);
     }
@@ -368,7 +373,7 @@ export function selectGreedy(candidates, timeBudget) {
   // ADD §6.2 Safeguard: Compare with best single candidate that fits the budget
   let bestSingle = null;
   for (const cand of candidates) {
-    if (cand.executionTime <= timeBudget) {
+    if (costs.get(cand) <= budget) {
       if (!bestSingle || cand.score > bestSingle.score) {
         bestSingle = cand;
       }
@@ -377,167 +382,140 @@ export function selectGreedy(candidates, timeBudget) {
 
   const totalSelectedScore = selected.reduce((sum, c) => sum + c.score, 0);
   if (bestSingle && bestSingle.score > totalSelectedScore) {
-    return [bestSingle];
+    return assertSelectionBudget([bestSingle], timeBudget);
   }
 
-  return selected;
+  return assertSelectionBudget(selected, timeBudget);
 }
 
 /**
  * Branch and Bound Exact Selection (Combinatorial State-Space Search with LP Relaxation Bound)
  * Solves the static Formulation F1 with bounded search and early branch pruning.
- * Copying partial combinations may retain O(n^2) references in the DFS frontier.
+ * Integer costs/values and rational bounds avoid false decimal-boundary pruning.
+ * Linked immutable paths avoid copying partial combinations in the frontier.
  */
-export function selectBranchAndBound(candidates, timeBudget, options = {}) {
-  if (!candidates || candidates.length === 0 || timeBudget <= 0) return [];
-
-  // REQ-4.7.7: If budget covers all candidates, select all
-  const totalCandidateTime = candidates.reduce((sum, c) => sum + c.executionTime, 0);
-  if (totalCandidateTime <= timeBudget) {
-    options.onComplete?.({ provenOptimal: true, nodesExplored: 0 });
-    return [...candidates].sort((a, b) => {
-      if (Math.abs(b.efficiency - a.efficiency) > 1e-9) return b.efficiency - a.efficiency;
-      if (a.executionTime !== b.executionTime) return a.executionTime - b.executionTime;
-      return a.testId.localeCompare(b.testId);
-    });
-  }
-
-  const maxNodes = options.maxNodes ?? 50000;
-  const timeoutMs = options.timeoutMs ?? 2000;
-  const startTime = Date.now();
-
-  // Sort descending by initial efficiency ratio
-  const items = [...candidates].sort((a, b) => {
-    if (Math.abs(b.efficiency - a.efficiency) > 1e-9) return b.efficiency - a.efficiency;
-    if (a.executionTime !== b.executionTime) return a.executionTime - b.executionTime;
-    return a.testId.localeCompare(b.testId);
+function fixedValueItems(candidates) {
+  const items = candidates.map(candidate => {
+    const scaled = Number(candidate.score) * 100_000;
+    const value = Math.round(scaled);
+    if (!Number.isSafeInteger(value) || value < 0 || Math.abs(scaled - value) > Number.EPSILON * Math.max(1, Math.abs(scaled)) * 8) throw new RangeError('Fixed-value selection requires finite, non-negative scores with at most five decimal places.');
+    return { candidate, cost: durationMilliseconds(candidate.executionTime), value };
   });
+  sumMilliseconds(items.map(item => item.cost));
+  if (!Number.isSafeInteger(items.reduce((sum, item) => sum + item.value, 0))) throw new RangeError('Combined selection value exceeds safe precision.');
+  return items;
+}
 
-  // Fractional Knapsack Upper Bound calculation
-  function computeUpperBound(startIndex, currentVal, remBudget) {
-    let bound = currentVal;
-    let b = remBudget;
-    for (let i = startIndex; i < items.length; i++) {
-      if (items[i].executionTime <= b) {
-        b -= items[i].executionTime;
-        bound += items[i].score;
-      } else {
-        bound += items[i].score * (b / items[i].executionTime);
-        break;
+function compareDensity(a, b) {
+  // Do not use the rounded display efficiency for an admissible bound.
+  const difference = BigInt(b.value) * BigInt(a.cost) - BigInt(a.value) * BigInt(b.cost);
+  return difference === 0n ? a.cost - b.cost || String(a.candidate.testId).localeCompare(String(b.candidate.testId)) : difference > 0n ? 1 : -1;
+}
+
+export function selectBranchAndBound(candidates, timeBudget, options = {}) {
+  const finish = (selected, provenOptimal, nodesExplored) => {
+    options.onComplete?.({ provenOptimal, nodesExplored });
+    return assertSelectionBudget(selected, Math.max(0, timeBudget));
+  };
+  if (!candidates || candidates.length === 0 || timeBudget <= 0) return finish([], true, 0);
+  const budget = budgetMilliseconds(timeBudget);
+  const items = fixedValueItems(candidates).sort(compareDensity);
+  if (sumMilliseconds(items.map(item => item.cost)) <= budget) return finish(items.map(item => item.candidate), true, 0);
+  const maxNodes = options.maxNodes ?? 50_000;
+  const timeoutMs = options.timeoutMs ?? 2000;
+  if (!Number.isSafeInteger(maxNodes) || maxNodes < 0 || !Number.isFinite(timeoutMs) || timeoutMs < 0) throw new RangeError('B&B limits must be finite and non-negative; node limit must be an integer.');
+  const startTime = Date.now();
+  let bestValue = 0, bestPath = null, nodesExplored = 0, capped = false;
+
+  function canImprove(start, value, remaining) {
+    let bound = value;
+    for (let i = start; i < items.length; i++) {
+      const item = items[i];
+      if (item.cost <= remaining) { remaining -= item.cost; bound += item.value; }
+      else {
+        // Exact rational comparison of the fractional upper bound to incumbent.
+        return BigInt(bound - bestValue) * BigInt(item.cost) + BigInt(item.value) * BigInt(remaining) > 0n;
       }
     }
-    return bound;
+    return bound > bestValue;
   }
 
-  let bestVal = 0;
-  let bestCombination = [];
-  let nodesExplored = 0;
-
-  // Iterative DFS stack to avoid V8 call stack overflow on massive candidate pools (n >= 5000)
-  const stack = [{ index: 0, currentVal: 0, currentWeight: 0, combination: [] }];
-
-  let capped = false;
-  while (stack.length > 0) {
+  const stack = [{ index: 0, value: 0, cost: 0, path: null }];
+  while (stack.length) {
+    if (nodesExplored >= maxNodes || Date.now() - startTime >= timeoutMs) { capped = true; break; }
+    const state = stack.pop();
     nodesExplored++;
-    if (nodesExplored > maxNodes || Date.now() - startTime > timeoutMs) {
-      capped = true;
-      break;
-    }
-
-    const { index, currentVal, currentWeight, combination } = stack.pop();
-
-    if (currentVal > bestVal) {
-      bestVal = currentVal;
-      bestCombination = combination;
-    }
-
-    if (index >= items.length) continue;
-
-    const remBudget = timeBudget - currentWeight;
-    const upperBound = computeUpperBound(index, currentVal, remBudget);
-
-    // Prune subtree if upper bound cannot exceed best known value
-    if (upperBound <= bestVal + 1e-9) {
-      continue;
-    }
-
-    const nextItem = items[index];
-
-    // Branch 2: Exclude item[index] (push first so Include branch is explored first)
-    stack.push({
-      index: index + 1,
-      currentVal,
-      currentWeight,
-      combination,
-    });
-
-    // Branch 1: Include item[index] (pushed second, popped first)
-    if (currentWeight + nextItem.executionTime <= timeBudget) {
-      stack.push({
-        index: index + 1,
-        currentVal: currentVal + nextItem.score,
-        currentWeight: currentWeight + nextItem.executionTime,
-        combination: [...combination, nextItem],
-      });
-    }
+    if (state.value > bestValue) { bestValue = state.value; bestPath = state.path; }
+    if (state.index >= items.length || !canImprove(state.index, state.value, budget - state.cost)) continue;
+    const item = items[state.index];
+    stack.push({ ...state, index: state.index + 1 });
+    if (state.cost + item.cost <= budget) stack.push({ index: state.index + 1, value: state.value + item.value, cost: state.cost + item.cost, path: { item, previous: state.path } });
   }
-
-  options.onComplete?.({ provenOptimal: !capped, nodesExplored });
-  return bestCombination;
+  const selected = [];
+  for (let node = bestPath; node; node = node.previous) selected.push(node.item.candidate);
+  return finish(selected.reverse(), !capped, nodesExplored);
 }
 
 /**
  * 0/1 Knapsack Dynamic Programming Selection (ADD §6.3, SRS REQ-4.7.4, REQ-4.7.5)
- * Exact for Formulation F1, with instance size guard.
+ * Exact for Formulation F1 at millisecond costs / five-decimal source scores.
+ * GCD-compressed dense tables or bounded Pareto states preserve that precision.
  */
 export function selectKnapsack(candidates, timeBudget, sizeLimit = DP_SIZE_LIMIT) {
   if (!candidates || candidates.length === 0 || timeBudget <= 0) return [];
-
-  // REQ-4.7.7: If budget covers all candidates, select all
-  const totalCandidateTime = candidates.reduce((sum, c) => sum + c.executionTime, 0);
-  if (totalCandidateTime <= timeBudget) {
-    return [...candidates].sort((a, b) => b.efficiency - a.efficiency);
-  }
-
-  const scale = 100;
-  const capacity = Math.floor(timeBudget * scale + 1e-9);
-  const instanceSize = (candidates.length + 1) * (capacity + 1);
-
-  // REQ-4.7.5: Size limit guard
-  if (instanceSize > sizeLimit) {
-    const error = new Error(`Knapsack DP capacity (${candidates.length} tests x ${timeBudget} min = ${instanceSize} cells) exceeds limit (${sizeLimit}). Use GREEDY or BRANCH_AND_BOUND instead.`);
-    error.code = "DP_SIZE_LIMIT_EXCEEDED";
-    error.statusCode = 400;
-    throw error;
-  }
-
-  const weights = candidates.map((candidate) => Math.ceil(candidate.executionTime * scale - 1e-9));
-  const table = Array.from({ length: candidates.length + 1 }, () => Array(capacity + 1).fill(0));
-
-  for (let candidateIndex = 1; candidateIndex <= candidates.length; candidateIndex += 1) {
-    const candidate = candidates[candidateIndex - 1];
-    const weight = weights[candidateIndex - 1];
-
-    for (let currentCapacity = 0; currentCapacity <= capacity; currentCapacity += 1) {
-      const withoutCandidate = table[candidateIndex - 1][currentCapacity];
-      const withCandidate = weight <= currentCapacity
-        ? candidate.score + table[candidateIndex - 1][currentCapacity - weight]
-        : Number.NEGATIVE_INFINITY;
-      table[candidateIndex][currentCapacity] = Math.max(withoutCandidate, withCandidate);
-    }
-  }
-
+  if (!Number.isSafeInteger(sizeLimit) || sizeLimit < 1) throw new RangeError('DP size limit must be a positive integer.');
+  const budget = budgetMilliseconds(timeBudget);
+  const original = fixedValueItems(candidates);
+  if (sumMilliseconds(original.map(item => item.cost)) <= budget) return assertSelectionBudget([...original].sort(compareDensity).map(item => item.candidate), timeBudget);
+  const items = original.filter(item => item.cost <= budget);
+  if (!items.length) return [];
+  function gcd(a, b) { while (b) [a, b] = [b, a % b]; return a; }
+  const divisor = items.reduce((value, item) => gcd(value, item.cost), 0);
+  const capacity = Math.floor(budget / divisor);
+  const costs = items.map(item => item.cost / divisor);
+  const cells = (items.length + 1) * (capacity + 1);
+  const limitError = () => Object.assign(new Error(`Knapsack DP retained-state requirement exceeds limit (${sizeLimit}). Use AUTO, GREEDY, or bounded BRANCH_AND_BOUND.`), { code: 'DP_SIZE_LIMIT_EXCEEDED', statusCode: 400 });
   const selected = [];
-  let currentCapacity = capacity;
-
-  for (let candidateIndex = candidates.length; candidateIndex > 0; candidateIndex -= 1) {
-    if (table[candidateIndex][currentCapacity] !== table[candidateIndex - 1][currentCapacity]) {
-      selected.push(candidates[candidateIndex - 1]);
-      currentCapacity -= weights[candidateIndex - 1];
+  if (cells <= sizeLimit) {
+    // GCD scaling is exact: no duration is rounded to a coarse table cell.
+    const table = Array.from({ length: items.length + 1 }, () => new Float64Array(capacity + 1));
+    for (let row = 1; row <= items.length; row++) {
+      const item = items[row - 1], weight = costs[row - 1];
+      for (let cost = 0; cost <= capacity; cost++) table[row][cost] = Math.max(table[row - 1][cost], weight <= cost ? item.value + table[row - 1][cost - weight] : -Infinity);
     }
+    let cost = capacity;
+    for (let row = items.length; row > 0; row--) if (table[row][cost] !== table[row - 1][cost]) { selected.push(items[row - 1].candidate); cost -= costs[row - 1]; }
+  } else {
+    // Sorted Pareto frontier: retain only states improving value as cost rises.
+    // Linked backpointers avoid copying combinations. Bound cumulative retained
+    // states (and hence work/backpointer storage), not just the final frontier.
+    let frontier = [{ cost: 0, value: 0, path: null }], retained = 1;
+    for (let index = 0; index < items.length; index++) {
+      const item = items[index], weight = costs[index];
+      const included = [];
+      for (const state of frontier) {
+        if (state.cost + weight > capacity) break;
+        included.push({ cost: state.cost + weight, value: state.value + item.value, previous: state.path });
+      }
+      let excludedIndex = 0, includedIndex = 0, best = -1;
+      const next = [];
+      while (excludedIndex < frontier.length || includedIndex < included.length) {
+        const excluded = frontier[excludedIndex], added = included[includedIndex];
+        let winner, fromAdded = false;
+        if (!added || excluded && excluded.cost < added.cost) { winner = excluded; excludedIndex++; }
+        else if (!excluded || added.cost < excluded.cost) { winner = added; includedIndex++; fromAdded = true; }
+        else { winner = excluded.value >= added.value ? excluded : added; fromAdded = winner === added; excludedIndex++; includedIndex++; }
+        if (winner.value <= best) continue;
+        if (retained + next.length + 1 > sizeLimit) throw limitError();
+        best = winner.value;
+        next.push({ cost: winner.cost, value: winner.value, path: fromAdded ? { item, previous: winner.previous } : winner.path });
+      }
+      retained += next.length;
+      frontier = next;
+    }
+    for (let node = frontier.at(-1).path; node; node = node.previous) selected.push(node.item.candidate);
   }
-
-  return selected.reverse();
+  return assertSelectionBudget(selected.reverse(), timeBudget);
 }
 
 export function checkChangedModulesCoverage(selectedTests, changedModuleIds) {
@@ -556,9 +534,7 @@ export function checkChangedModulesCoverage(selectedTests, changedModuleIds) {
 
 export function summarizeSelection(selectedTests) {
   return {
-    totalExecutionTime: Number(selectedTests
-      .reduce((total, test) => total + test.executionTime, 0)
-      .toFixed(2)),
+    totalExecutionTime: selectedDurationMinutes(selectedTests),
     totalScore: Number(selectedTests
       .reduce((total, test) => total + test.score, 0)
       .toFixed(5)),

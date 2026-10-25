@@ -2,8 +2,9 @@ import { buildCandidates, selectGreedy, selectKnapsack, selectBranchAndBound, DP
 import { isCodeFile, isTestFile } from './sourceAnalysis.js';
 import { performance } from 'node:perf_hooks';
 import { createSchedule } from '../execution/scheduler.js';
+import { assertSelectionBudget, budgetMilliseconds, DURATION_PRECISION, durationMilliseconds, selectedDurationMilliseconds, selectedDurationMinutes } from './duration.js';
 
-export function planSource({ analysis, previous, history = [], timeBudget = 15, workerCount = 2, algorithm = 'AUTO' }) {
+export function planSource({ analysis, previous, history = [], timeBudget = 15, workerCount = 2, algorithm = 'AUTO', dpSizeLimit = DP_SIZE_LIMIT }) {
   if (!analysis.supported) throw new Error(analysis.unsupported.join(' '));
   if (!Number.isFinite(timeBudget) || timeBudget <= 0 || timeBudget > 1440) throw new Error('Budget must be greater than zero and at most 1440 minutes.');
   if (!Number.isInteger(workerCount) || workerCount < 1 || workerCount > 4) throw new Error('Choose between 1 and 4 isolated workers.');
@@ -21,7 +22,9 @@ export function planSource({ analysis, previous, history = [], timeBudget = 15, 
   const coverage = {};
   for (const test of analysis.tests) coverage[test] = [...new Set([...(analysis.coverage[test] || []), ...(priorByTest.get(test)?.covered || [])])].filter(name => analysis.modules.includes(name));
   const changedModules = changedFiles.filter(name => analysis.modules.includes(name));
-  const coverageGap = changedModules.filter(name => !Object.values(coverage).some(paths => paths.includes(name)));
+  // Until a baseline is usable, earlier uncovered code still needs evidence.
+  const evidenceRequired = baselineUsable ? changedModules : analysis.modules;
+  const coverageGap = evidenceRequired.filter(name => !Object.values(coverage).some(paths => paths.includes(name)));
   if (coverageGap.length) reasons.push('Some changed code has no test-coverage evidence.');
   const fullValidation = reasons.length > 0;
   const requiredTests = baselineUsable && changedFiles.length === 0 ? [] : fullValidation ? analysis.tests : analysis.tests.filter(test => coverage[test].some(name => changedModules.includes(name)));
@@ -39,32 +42,43 @@ export function planSource({ analysis, previous, history = [], timeBudget = 15, 
   const visits = new Map();
   for (const test of candidates) for (const name of test.coveredModuleIds) visits.set(name, (visits.get(name) || 0) + 1);
   const overlap = [...visits.values()].some(count => count > 1);
-  const dpFits = (candidates.length + 1) * (Math.floor(timeBudget * 100) + 1) <= DP_SIZE_LIMIT;
   let chosen = algorithm;
   let algorithmReason = 'Advanced algorithm override.';
   if (chosen === 'AUTO') {
-    chosen = !overlap && dpFits ? 'KNAPSACK' : 'GREEDY';
-    algorithmReason = overlap ? 'Coverage overlaps; Greedy recomputes marginal value.' : dpFits ? 'Independent coverage and a bounded DP instance permit exact fixed-value selection.' : 'DP size limit exceeded; use bounded-cost Greedy selection.';
+    chosen = overlap ? 'GREEDY' : 'KNAPSACK';
+    algorithmReason = overlap ? 'Coverage overlaps; Greedy recomputes marginal value.' : 'Independent coverage permits bounded exact fixed-value DP at millisecond precision.';
   }
-  if (chosen === 'KNAPSACK' && !dpFits) throw new Error('DP instance exceeds its size limit. Choose AUTO or GREEDY.');
   let search = null;
   const selectionStarted = performance.now();
-  const selected = chosen === 'KNAPSACK' ? selectKnapsack(candidates, timeBudget) : chosen === 'BRANCH_AND_BOUND' ? selectBranchAndBound(candidates, timeBudget, { onComplete: result => { search = result; } }) : selectGreedy(candidates, timeBudget);
+  let selected;
+  try {
+    selected = chosen === 'KNAPSACK' ? selectKnapsack(candidates, timeBudget, dpSizeLimit) : chosen === 'BRANCH_AND_BOUND' ? selectBranchAndBound(candidates, timeBudget, { onComplete: result => { search = result; } }) : selectGreedy(candidates, timeBudget);
+  } catch (error) {
+    if (algorithm !== 'AUTO' || error.code !== 'DP_SIZE_LIMIT_EXCEEDED') throw error;
+    chosen = 'GREEDY';
+    algorithmReason = 'DP size limit exceeded; use bounded-cost Greedy selection.';
+    selected = selectGreedy(candidates, timeBudget);
+  }
+  assertSelectionBudget(selected, timeBudget);
   const selectionRunningTimeMs = Number((performance.now() - selectionStarted).toFixed(3));
   const schedule = selected.length ? createSchedule({ selectedTests: selected, strategy: 'LPT', workers: Array.from({ length: workerCount }, (_, index) => ({ workerId: `SOURCE_W${index + 1}`, workerStatus: 'AVAILABLE' })) }) : null;
   const staticScore = tests => Number(tests.reduce((sum, test) => sum + (candidates.find(candidate => candidate.testId === test.testId)?.score || 0), 0).toFixed(5));
   const priority = [];
-  let used = 0;
-  for (const test of [...candidates].sort((a, b) => a.executionTime - b.executionTime || a.testId.localeCompare(b.testId))) if (used + test.executionTime <= timeBudget + 1e-9) { priority.push(test); used += test.executionTime; }
+  let priorityCost = 0;
+  const budget = budgetMilliseconds(timeBudget);
+  for (const test of [...candidates].sort((a, b) => a.executionTime - b.executionTime || a.testId.localeCompare(b.testId))) {
+    const cost = durationMilliseconds(test.executionTime);
+    if (priorityCost + cost <= budget) { priority.push(test); priorityCost += cost; }
+  }
   const comparison = tests => {
     const metrics = tests.length ? createSchedule({ selectedTests: tests, strategy: 'LPT', workers: Array.from({ length: workerCount }, (_, index) => ({ workerId: `SOURCE_W${index + 1}`, workerStatus: 'AVAILABLE' })) }).metrics : { makespan: 0, workerUtilization: 0, imbalance: 0 };
-    return { testCount: tests.length, estimatedMinutes: Number(tests.reduce((sum, test) => sum + test.executionTime, 0).toFixed(5)), staticValue: staticScore(tests), coveredModuleCount: new Set(tests.flatMap(test => test.coveredModuleIds)).size, makespan: metrics.makespan, workerUtilization: metrics.workerUtilization, imbalance: metrics.imbalance };
+    return { testCount: tests.length, estimatedMinutes: selectedDurationMinutes(tests), staticValue: staticScore(tests), coveredModuleCount: new Set(tests.flatMap(test => test.coveredModuleIds)).size, makespan: metrics.makespan, workerUtilization: metrics.workerUtilization, imbalance: metrics.imbalance };
   };
-  return { selectionRunningTimeMs, algorithm: chosen, algorithmReason, formulation: chosen === 'GREEDY' ? 'OVERLAP_AWARE' : 'FIXED_ADDITIVE', search,
+  return { selectionRunningTimeMs, algorithm: chosen, algorithmReason, formulation: chosen === 'GREEDY' ? 'OVERLAP_AWARE' : 'FIXED_ADDITIVE', search, durationPrecision: DURATION_PRECISION,
     timeBudget, workerCount, changedFiles, changedModules, fullValidation, fallbackReasons: [...new Set(reasons)], requiredTests,
     selectedTests: selected.map(({ metadata, ...test }) => test), skippedTests: analysis.tests.filter(test => !selected.some(item => item.testId === test)),
     coverageGap, complete: selected.length === requiredTests.length && !coverageGap.length, budgetConflict: selected.length < requiredTests.length,
     baseline: !previous, noChanges: Boolean(baselineUsable && changedFiles.length === 0), schedule,
-    comparisons: { selected: comparison(selected), runAll: { ...comparison(candidates), withinBudget: candidates.reduce((sum, test) => sum + test.executionTime, 0) <= timeBudget }, staticPriority: comparison(priority) },
+    comparisons: { selected: comparison(selected), runAll: { ...comparison(candidates), withinBudget: selectedDurationMilliseconds(candidates) <= budgetMilliseconds(timeBudget) }, staticPriority: comparison(priority) },
     notice: 'Coverage and dependency evidence guide regression selection; passing selected tests does not guarantee every skipped test would pass. Budget limits apply to estimated selected durations.' };
 }

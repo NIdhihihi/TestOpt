@@ -220,3 +220,12 @@ test("fractional durations never produce a lower bound above makespan", () => {
   assert.ok(Math.abs(result.metrics.lowerBound - 0.3) < 1e-9);
   assert.ok(result.metrics.lowerBound <= result.metrics.makespan + 1e-9);
 });
+
+test('short fractional jobs retain precise loads and physically possible metrics', () => {
+  const result = createSchedule({ selectedTests: [{ testId: 'A', executionTime: 0.014, priority: 'MEDIUM' }], workers: [workers[0]], strategy: 'LPT' });
+  assert.equal(result.metrics.makespan, 0.014);
+  assert.equal(result.metrics.totalExecutionTime, 0.014);
+  assert.equal(result.metrics.lowerBound, 0.014);
+  assert.equal(result.metrics.workerUtilization, 100);
+  assert.equal(result.schedule[0].endOffset, 0.014);
+});

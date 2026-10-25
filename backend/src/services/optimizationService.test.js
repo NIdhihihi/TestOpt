@@ -207,7 +207,7 @@ test("selectKnapsack respects budget and enforces DP capacity limit", () => {
 
   // Test size limit guard with total candidate time (16) > budget (10)
   assert.throws(() => {
-    selectKnapsack(candidates, 10, 100); // 3 * (10 * 100) = 3000 > 100
+    selectKnapsack(candidates, 10, 1); // Insufficient retained-state allowance.
   }, /exceeds limit/);
 });
 
@@ -235,4 +235,28 @@ test("branch-and-bound reports capped search rather than claiming optimality", (
   assert.equal(search.provenOptimal, false);
   selectBranchAndBound(candidates, 3, { onComplete: info => { search = info; } });
   assert.equal(search.provenOptimal, true);
+});
+
+test('Greedy does not create spare fractional budget through rounding', () => {
+  const candidates = buildCandidates({ tests: ['A', 'B', 'C'].map(test_id => ({ test_id, test_name: test_id, status: 'ACTIVE', execution_time: 0.014 })), coverage: ['A', 'B', 'C'].map(test_id => ({ test_id, module_id: 'M', coverage_weight: 1 })), history: [], modules: [{ module_id: 'M', criticality: 5 }], changedModuleIds: ['M'], affectedModuleIds: ['M'] });
+  const selected = selectGreedy(candidates, 0.04);
+  assert.equal(selected.length, 2);
+  assert.ok(selected.reduce((sum, item) => sum + item.executionTime, 0) <= 0.04);
+});
+
+test('completed B&B includes a decimal-boundary combination and reports exact processed nodes', () => {
+  const candidates = [{ testId: 'A', executionTime: 0.1, score: 0.4, efficiency: 4 }, { testId: 'B', executionTime: 0.2, score: 0.5, efficiency: 2.5 }];
+  let search;
+  const selected = selectBranchAndBound(candidates, 0.3, { onComplete: value => { search = value; } });
+  assert.deepEqual(selected.map(item => item.testId).sort(), ['A', 'B']);
+  assert.equal(search.provenOptimal, true);
+  const constrained = [...candidates, { testId: 'C', executionTime: 0.25, score: 0.8, efficiency: 3.2 }];
+  selectBranchAndBound(constrained, 0.3, { maxNodes: 2, onComplete: value => { search = value; } });
+  assert.equal(search.provenOptimal, false);
+  assert.equal(search.nodesExplored, 2);
+});
+
+test('DP preserves millisecond fractional costs instead of rounding to 0.01 minute', () => {
+  const candidates = [{ testId: 'A', executionTime: 0.014, score: 0.6 }, { testId: 'B', executionTime: 0.014, score: 0.6 }, { testId: 'C', executionTime: 0.1, score: 0.9 }];
+  assert.deepEqual(selectKnapsack(candidates, 0.03).map(item => item.testId), ['A', 'B']);
 });

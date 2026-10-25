@@ -27,6 +27,10 @@ Discovered source modules currently use default criticality 5/10 and test files 
 
 Auto chooses overlap-aware Greedy or bounded DP for independent fixed-value instances. Advanced settings expose Greedy, DP, and bounded Branch and Bound. B&B reports whether its search completed. LPT assigns selected files across 1-4 workers. Most recent plan budget/worker settings are reused. Estimated selected duration stays within budget; actual runtime is measured independently and can vary. When required files do not fit, the plan and its results stay incomplete. Users must explicitly approve any execution; a rejected plan does not run.
 
+Duration accounting uses integer milliseconds, matching the runner's measured timing resolution. API duration fields remain in minutes. Genuine finer-than-millisecond estimates round up; finer budgets round down, without making positive tests free. Binary representation noise around an integer millisecond is repaired. Five-decimal source valuation scores are represented as integers for fixed-value selection. Exactness refers to this timing/value model, not a guarantee about skipped tests.
+
+DP uses exact GCD-compressed dense costs when the table fits; otherwise it uses a Pareto frontier with a cumulative retained-state limit (including backpointer history). The default allowance is 1,000,000 dense cells or retained sparse states. An all-fit result needs no table. If a constrained DP computation exceeds its allowance, AUTO explains a Greedy fallback; an explicit DP request reports the resource error instead of silently approximating. B&B derives its bound from actual integer costs/values rather than rounded display efficiencies; a cap reports an unproven incumbent and counts only processed nodes. Scheduling retains precise loads/offsets and computes metrics before display rounding.
+
 View old plans and export the complete plan/results as JSON. Archive rather than delete a project: files, versions, plans, legacy runs, and execution history remain readable, while uploads/new runs are blocked. Source history is separate from the legacy manual catalog analytics.
 
 ## Repeatable validation

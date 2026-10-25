@@ -15,6 +15,7 @@ Retain: change -> impact graph -> candidates -> four-factor valuation -> budgete
 | REQ-4.8-4.9 | Actual outcomes at test-file granularity for the first upload adapter; preserve worker assignments and approval. |
 | Section 5.2 | Strict budget; missing necessary checks produces incomplete validation rather than silently exceeding budget. |
 | Time units | Positive fractional-minute measured estimates are supported; discretized exact methods must remain budget-feasible. This revises the whole-minute assumption. |
+| Step-3 precision correction | Use integer millisecond costs and five-decimal fixed values; finer input timing is handled conservatively. DP uses exact scaling or bounded sparse states, not coarse 0.01-minute rounding. Preserve explicit resource errors/fallback explanations and unproven capped B&B status. |
 | History | Archive projects and retain snapshots, runs, and results. |
 
 ## First adapter and boundaries

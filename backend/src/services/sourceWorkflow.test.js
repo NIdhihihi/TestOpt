@@ -99,3 +99,38 @@ test('passing outputs cannot claim complete validation without coverage and all 
   assert.equal(sourceResultStatus(plan, [{ status: 'ERROR' }]), 'ERROR');
   assert.equal(sourceResultStatus(plan, [{ status: 'FAILED' }]), 'FAILED');
 });
+
+test('an unusable baseline retains coverage gaps until the code is covered or removed', () => {
+  const files = validateSourceFiles([...example, { path: 'src/orphan.js', content: 'export const x = 1;' }]);
+  const analysis = analyzeSource(files);
+  const previous = { analysis, complete: false };
+  const passingResults = plan => plan.selectedTests.map(test => ({ testPath: test.testId, status: 'PASSED', coverageAvailable: true }));
+  const changed = validateSourceFiles(files.map(file => file.path === 'src/add.js' ? { ...file, content: 'export function add(a,b) { return a+b; }' } : file));
+  for (const current of [files, changed]) {
+    const plan = planSource({ analysis: analyzeSource(current, files), previous });
+    assert.deepEqual(plan.coverageGap, ['src/orphan.js']);
+    assert.equal(plan.complete, false);
+    assert.equal(plan.noChanges, false);
+    assert.equal(sourceResultStatus(plan, passingResults(plan)), 'INCOMPLETE');
+  }
+  const covered = validateSourceFiles([...files, { path: 'test/orphan.test.js', content: "import test from 'node:test'; import assert from 'node:assert/strict'; import {x} from '../src/orphan.js'; test('x',()=>assert.equal(x,1));" }]);
+  for (const current of [covered, validateSourceFiles(example)]) {
+    const plan = planSource({ analysis: analyzeSource(current, files), previous });
+    assert.deepEqual(plan.coverageGap, []);
+    assert.equal(plan.complete, true);
+    assert.equal(sourceResultStatus(plan, passingResults(plan)), 'COMPLETED');
+  }
+});
+
+test('AUTO falls back only on an actual bounded DP resource failure; explicit DP reports it', () => {
+  const analysis = analyzeSource(validateSourceFiles(example));
+  const settings = { analysis, timeBudget: 0.03, dpSizeLimit: 1 };
+  const automatic = planSource({ ...settings, algorithm: 'AUTO' });
+  assert.equal(automatic.algorithm, 'GREEDY');
+  assert.match(automatic.algorithmReason, /DP size limit/);
+  assert.equal(automatic.complete, false);
+  assert.ok(automatic.comparisons.selected.estimatedMinutes <= settings.timeBudget);
+  assert.throws(() => planSource({ ...settings, algorithm: 'KNAPSACK' }), error => error.code === 'DP_SIZE_LIMIT_EXCEEDED');
+  // No search/table allocation is necessary when every candidate fits.
+  assert.equal(planSource({ analysis, timeBudget: 1440, dpSizeLimit: 1, algorithm: 'AUTO' }).algorithm, 'KNAPSACK');
+});

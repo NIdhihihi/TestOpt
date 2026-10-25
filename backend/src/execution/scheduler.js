@@ -1,4 +1,6 @@
 
+import { durationMilliseconds, millisecondsToMinutes, sumMilliseconds } from '../services/duration.js';
+
 const PRIORITY_RANK = { HIGH: 1, MEDIUM: 2, LOW: 3 };
 const VALID_STRATEGIES = new Set(["FCFS", "PRIORITY", "GREEDY", "LPT"]);
 
@@ -139,7 +141,8 @@ export function createSchedule({ selectedTests, strategy, workers }) {
 
     return {
       ...test,
-      executionTime,
+      executionTime: millisecondsToMinutes(durationMilliseconds(executionTime)),
+      durationMs: durationMilliseconds(executionTime),
       originalIndex,
     };
   });
@@ -187,14 +190,14 @@ export function createSchedule({ selectedTests, strategy, workers }) {
     }
 
     const startOffset = worker.load;
-    const endOffset = startOffset + test.executionTime;
+    const endOffset = sumMilliseconds([startOffset, test.durationMs]);
 
     const scheduledTest = {
       testId: test.testId,
       workerId: worker.workerId,
       executionTime: test.executionTime,
-      startOffset: round2(startOffset),
-      endOffset: round2(endOffset),
+      startOffset: millisecondsToMinutes(startOffset),
+      endOffset: millisecondsToMinutes(endOffset),
       priority: test.priority,
       score: test.score,
       reason: test.reason,
@@ -212,22 +215,19 @@ export function createSchedule({ selectedTests, strategy, workers }) {
 
   const workerSummaries = workerLoads.map((worker) => ({
     workerId: worker.workerId,
-    estimatedLoad: round2(worker.load),
+    estimatedLoad: millisecondsToMinutes(worker.load),
     tests: worker.tests,
   }));
 
   // SRS REQ-4.8.3, ADD §7.3: Complete Scheduling Metrics
-  const loads = workerSummaries.map((worker) => worker.estimatedLoad);
+  const loads = workerLoads.map((worker) => worker.load);
   const makespan = Math.max(...loads);
-  const totalExecutionTime = tests.reduce(
-    (total, test) => total + test.executionTime,
-    0
-  );
+  const totalExecutionTime = sumMilliseconds(tests.map(test => test.durationMs));
   const workerCount = workerSummaries.length;
   const minimumLoad = Math.min(...loads);
   const totalCapacity = workerCount * makespan;
   const maxExecutionTime = tests.reduce(
-    (max, test) => Math.max(max, test.executionTime),
+    (max, test) => Math.max(max, test.durationMs),
     0
   );
   // Theoretical Lower Bound: LB = max(sum(pj) / m, max(pj)) for fractional durations
@@ -243,14 +243,14 @@ export function createSchedule({ selectedTests, strategy, workers }) {
     metrics: {
       totalTests: tests.length,
       workerCount,
-      totalExecutionTime: round2(totalExecutionTime),
-      makespan: round2(makespan),
+      totalExecutionTime: millisecondsToMinutes(totalExecutionTime),
+      makespan: millisecondsToMinutes(makespan),
       workerUtilization:
         totalCapacity > 0
           ? round2((totalExecutionTime / totalCapacity) * 100)
           : 0,
-      imbalance: round2(Math.max(...loads) - minimumLoad),
-      lowerBound,
+      imbalance: millisecondsToMinutes(Math.max(...loads) - minimumLoad),
+      lowerBound: millisecondsToMinutes(lowerBound),
     },
   };
 }
