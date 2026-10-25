@@ -1,0 +1,6 @@
+---
+description: TestOpt backend rules
+globs: backend/**
+---
+
+Keep database access server-side. Validate input, use parameterized queries, require the appropriate role, and add integration coverage for meaningful API behavior.

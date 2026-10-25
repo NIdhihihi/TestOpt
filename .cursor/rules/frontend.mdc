@@ -1,0 +1,6 @@
+---
+description: TestOpt frontend rules
+globs: frontend/**
+---
+
+Follow docs/DESIGN.md. Keep API calls authenticated, show loading, empty, and error states, and preserve responsive layouts.

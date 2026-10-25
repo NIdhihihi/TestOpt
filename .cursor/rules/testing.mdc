@@ -1,0 +1,6 @@
+---
+description: TestOpt testing rules
+globs: "{backend/**,frontend/**}"
+---
+
+Run relevant backend checks, integration tests, frontend lint, and production build. Fix failures before committing.
