@@ -20,6 +20,27 @@ test('discovers directed imports and test files, ignores commented fake imports'
   assert.deepEqual(analysis.coverage['test/add.test.js'], ['src/add.js']);
   assert.equal(analyzeSource(validateSourceFiles([...example, { path: 'unused.js', content: "// import x from 'not-real';" }])).supported, true);
 });
+
+test('recognizes prefix-only built-ins and built-in subpaths in imports and require', () => {
+  for (const ref of ['node:test', 'node:test/reporters', 'node:assert/strict', 'assert/strict', 'node:fs', 'fs/promises']) {
+    for (const content of [`import '${ref}';`, `require('${ref}');`]) {
+      const analysis = analyzeSource(validateSourceFiles([...example, { path: 'src/builtin.js', content }]));
+      assert.equal(analysis.supported, true, `${content}: ${analysis.unsupported.join(' ')}`);
+      assert.equal(analysis.dependencies.some(edge => edge.source === 'src/builtin.js'), false);
+      if (ref === 'node:fs' || ref === 'fs/promises') assert.ok(analysis.warnings.some(message => message.includes('Runtime file/process access in src/builtin.js')));
+    }
+  }
+});
+
+test('rejects bare prefix-only names and unknown node-prefixed imports', () => {
+  for (const ref of ['test', 'test/reporters', 'node:not-a-real-module', 'not-a-real-package']) {
+    for (const content of [`import '${ref}';`, `require('${ref}');`]) {
+      const analysis = analyzeSource(validateSourceFiles([...example, { path: 'src/external.js', content }]));
+      assert.equal(analysis.supported, false, content);
+      assert.ok(analysis.unsupported.includes(`External dependency ${ref} in src/external.js.`), content);
+    }
+  }
+});
 test('detects versions and narrows only with a complete passing coverage baseline', () => {
   const files = validateSourceFiles(example);
   const oldAnalysis = analyzeSource(files);

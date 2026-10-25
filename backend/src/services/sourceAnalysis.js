@@ -1,9 +1,8 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { builtinModules } from 'node:module';
+import { isBuiltin } from 'node:module';
 import { parse } from '@babel/parser';
 
-const builtins = new Set(builtinModules.map(name => name.replace(/^node:/, '')));
 export const isTestFile = name => /\.(test|spec)\.(js|mjs|cjs)$/.test(name);
 export const isCodeFile = name => /\.(js|mjs|cjs)$/.test(name);
 export const fingerprint = text => createHash('sha256').update(text).digest('hex');
@@ -66,7 +65,9 @@ export function analyzeSource(files, previousFiles = []) {
     }
     visit(ast.program);
     for (const ref of new Set(refs)) {
-      if (builtins.has(ref.replace(/^node:/, ''))) {
+      // Prefix-only built-ins such as node:test are absent from builtinModules
+      // on Node 22. Keep the specifier intact so bare "test" stays external.
+      if (isBuiltin(ref)) {
         if (/^(node:)?(fs|child_process|worker_threads|module)(\/|$)/.test(ref)) warnings.push(`Runtime file/process access in ${file.path}; broaden validation.`);
         continue;
       }
