@@ -57,3 +57,4 @@ export function TestTable({ tests, selectedPath, onPick, compact = false }) {
     </div>
   )
 }
+
