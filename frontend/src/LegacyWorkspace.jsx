@@ -27,125 +27,6 @@ function getImpactLevels(changedModuleIds, dependencies) {
   return levels
 }
 
-function AuthScreen({ onAuthenticated }) {
-  const [mode, setMode] = useState('login')
-  const [form, setForm] = useState({
-    name: '',
-    organizationName: '',
-    email: '',
-    password: '',
-  })
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(false)
-  async function submit(event) {
-    event.preventDefault()
-    setLoading(true)
-    setError('')
-    try {
-      const path = mode === 'login' ? '/auth/login' : '/auth/register'
-      const body =
-        mode === 'login' ? { email: form.email, password: form.password } : form
-      const response = await fetch(`${API}${path}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      })
-      const data = await response.json()
-      if (!response.ok) throw new Error(data.message || 'Could not sign in.')
-      onAuthenticated({
-        ...data,
-        organizations: data.organizations || [data.organization],
-      })
-    } catch (requestError) {
-      setError(requestError.message)
-    } finally {
-      setLoading(false)
-    }
-  }
-  return (
-    <main className="auth-shell">
-      <section className="auth-card">
-        <p className="eyebrow">TEST EXECUTION INTELLIGENCE</p>
-        <h1>TestOpt</h1>
-        <p>
-          Sign in to manage projects, analyze code changes, and coordinate test
-          execution.
-        </p>
-        <div className="auth-switch">
-          <button
-            className={mode === 'login' ? 'active' : ''}
-            onClick={() => setMode('login')}
-          >
-            Sign in
-          </button>
-          <button
-            className={mode === 'register' ? 'active' : ''}
-            onClick={() => setMode('register')}
-          >
-            Create organization
-          </button>
-        </div>
-        {error && <div className="alert">{error}</div>}
-        <form onSubmit={submit}>
-          {mode === 'register' && (
-            <>
-              <label>
-                Name
-                <input
-                  required
-                  value={form.name}
-                  onChange={(event) =>
-                    setForm({ ...form, name: event.target.value })
-                  }
-                />
-              </label>
-              <label>
-                Organization
-                <input
-                  required
-                  value={form.organizationName}
-                  onChange={(event) =>
-                    setForm({ ...form, organizationName: event.target.value })
-                  }
-                />
-              </label>
-            </>
-          )}
-          <label>
-            Email
-            <input
-              required
-              type="email"
-              value={form.email}
-              onChange={(event) =>
-                setForm({ ...form, email: event.target.value })
-              }
-            />
-          </label>
-          <label>
-            Password
-            <input
-              required
-              type="password"
-              minLength="12"
-              value={form.password}
-              onChange={(event) =>
-                setForm({ ...form, password: event.target.value })
-              }
-            />
-          </label>
-          <button className="primary" disabled={loading}>
-            {loading
-              ? 'Working…'
-              : mode === 'login'
-                ? 'Sign in'
-                : 'Create account'}
-          </button>
-        </form>
-      </section>
-    </main>
-  )
-}
 
 function CatalogEditor() {
   const [projects, setProjects] = useState([])
@@ -776,21 +657,15 @@ function App() {
   }
   if (!session?.accessToken)
     return (
-      <AuthScreen
-        onAuthenticated={(newSession) => {
-          window.localStorage.setItem(
-            'testopt-session',
-            JSON.stringify(newSession),
-          )
-          setSession(newSession)
-        }}
-      />
+      <div className="alert">
+        Please sign in from the main screen to use manual tools.
+      </div>
     )
   return (
     <main className="app-shell">
       <header className="hero">
         <div>
-          <p className="eyebrow">TEST EXECUTION INTELLIGENCE</p>
+          <p className="eyebrow">REGRESSION TEST SELECTION</p>
           <h1>TestOpt</h1>
           <p className="lede">
             Select the tests that matter, fit them to your budget, and schedule

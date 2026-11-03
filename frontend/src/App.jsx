@@ -81,10 +81,8 @@ function AuthScreen({ onAuthenticated }) {
     }
   }
   return (
-    <>
-      <VisualScene />
-      <main className="auth-shell">
-        <section className="card auth-card">
+    <main className="auth-shell">
+      <section className="card auth-card">
           <Logo />
           <h1>
             {mode === 'login' ? 'Sign in to TestOpt' : 'Create an organization'}
@@ -159,7 +157,6 @@ function AuthScreen({ onAuthenticated }) {
           </form>
         </section>
       </main>
-    </>
   )
 }
 
@@ -673,15 +670,15 @@ export default function App() {
   )
   const captions = [
     [
-      'A change enters the city',
-      `${model.changedFiles.length} changed files in ${version ? versionNumber(versionId) : 'your project'}. Violet beams mark changed source modules.`,
+      'Source change delta',
+      `${model.changedFiles.length} changed files in ${version ? versionNumber(versionId) : 'your project'}. Highlights mark changed source modules.`,
     ],
     [
-      'Follow the impact',
-      `${model.analysis?.dependencies?.length || 0} discovered dependency links connect source modules. Buildings represent the uploaded code.`,
+      'Dependency impact analysis',
+      `${model.analysis?.dependencies?.length || 0} discovered dependency links connect source modules. Spatial layout shows inspected modules.`,
     ],
     [
-      'Value the relevant tests',
+      'Test valuation',
       'Selection scores combine change relevance, module criticality, failure history, and marginal coverage. Inspect exact factors in Test suite.',
     ],
     [
@@ -692,7 +689,7 @@ export default function App() {
     ],
     [
       'Watch execution evidence',
-      `${current?.results?.length || 0} actual results recorded. Green means passed; pink means a failure or error. Unexecuted tests have no outcome.`,
+      `${current?.results?.length || 0} actual results recorded. Green means passed; red means a failure or error. Unexecuted tests have no outcome.`,
     ],
     [
       'Keep the full picture',
@@ -789,7 +786,7 @@ export default function App() {
             </a>
           </section>
           <aside className="card city-legend">
-            <strong>The data city</strong>
+            <strong>Pipeline Stages</strong>
             {STAGES.map((stage) => (
               <span key={stage.name}>
                 <i style={{ background: stage.color }} />
@@ -797,9 +794,9 @@ export default function App() {
               </span>
             ))}
             <small>
-              Source modules are buildings.
+              Module layout maps imports
               <br />
-              Test files form their floors.
+              and assigned test files.
             </small>
           </aside>
         </div>
