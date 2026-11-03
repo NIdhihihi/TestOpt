@@ -23,7 +23,6 @@ export default function VisualScene({ city = false, analysis, tests = [], change
     const material = (color, opacity = 1) => { const item = new THREE.MeshBasicMaterial({ color, transparent: opacity < 1, opacity }); materials.push(item); return item; };
     const lineMaterial = color => { const item = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.7 }); materials.push(item); return item; };
     const geometry = item => { geometries.push(item); return item; };
-    let ring, crystal, wave;
     if (!city) {
       camera.position.z = 30;
       const geo = geometry(new THREE.IcosahedronGeometry(1, 0));
@@ -62,10 +61,6 @@ export default function VisualScene({ city = false, analysis, tests = [], change
         if (changed) { beam = new THREE.Mesh(geometry(new THREE.CylinderGeometry(0.12, 0.12, 25, 8)), material(0xc4b5fd, 0.25)); beam.position.set(x, 12.5, z); scene.add(beam); }
         buildings.push({ name, pos, edge, road, changed, impacted, top: height + 0.8, label, beam });
       });
-      const base = new THREE.Mesh(geometry(new THREE.CylinderGeometry(1.4, 1.6, 0.5, 8)), material(0x1a2340)); base.position.y = 0.25; scene.add(base);
-      ring = new THREE.Mesh(geometry(new THREE.TorusGeometry(1.45, 0.07, 8, 48)), material(0x8b5cf6)); ring.rotation.x = Math.PI / 2; ring.position.y = 0.52; scene.add(ring);
-      crystal = new THREE.Mesh(geometry(new THREE.OctahedronGeometry(0.8, 0)), material(0x7dd3fc)); crystal.material.wireframe = true; crystal.position.y = 2.2; scene.add(crystal);
-      wave = new THREE.Mesh(geometry(new THREE.TorusGeometry(1, 0.04, 6, 64)), material(0xe879f9, 0)); wave.rotation.x = Math.PI / 2; wave.position.y = 0.08; scene.add(wave);
     }
     const resize = () => { const width = element.clientWidth || window.innerWidth, height = element.clientHeight || window.innerHeight; renderer.setSize(width, height); camera.aspect = width / height; camera.updateProjectionMatrix(); };
     let pointerX = 0, pointerY = 0, frame, clock = 0, last = performance.now();
@@ -90,8 +85,6 @@ export default function VisualScene({ city = false, analysis, tests = [], change
           item.mesh.material.color.lerp(new THREE.Color(color), 0.12);
         });
         buildings.forEach(item => { item.edge.material.color.setHex(item.changed && stage === 0 ? 0xc4b5fd : item.impacted && stage < 4 ? 0x38bdf8 : 0x2e3a5c); if (item.beam) item.beam.material.opacity = stage === 0 ? 0.2 + Math.sin(clock * 2) * 0.12 : 0; });
-        ring.material.color.setHex(PALETTE[stage] || PALETTE[0]); crystal.rotation.y = clock; crystal.rotation.x = clock * 0.5; crystal.position.y = 2.2 + Math.sin(clock * 1.5) * 0.15;
-        const pulse = (clock * 0.2) % 1; wave.visible = stage === 3 || stage === 5; wave.scale.setScalar(1 + pulse * 16); wave.material.opacity = (1 - pulse) * 0.6;
         const radius = Math.max(24, 17 / camera.aspect, Math.sqrt(buildings.length) * 6);
         const angle = (reduced ? 0.6 : clock * 0.045) + pointerX * 0.4;
         camera.position.set(Math.sin(angle) * radius, radius * 0.55, Math.cos(angle) * radius); camera.lookAt(0, 1.5, 0); camera.updateMatrixWorld();
