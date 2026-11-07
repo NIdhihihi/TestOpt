@@ -1,6 +1,6 @@
 # TestOpt
 
-### Intelligent Test Case Selection & Execution Optimizer
+### Change-Aware Test Case Selection & Execution Optimizer
 
 TestOpt is a software testing optimization tool that selects relevant test cases for changed modules under a specified execution-time budget and schedules selected tests across available workers.
 

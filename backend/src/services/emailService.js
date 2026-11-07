@@ -61,7 +61,7 @@ function renderVerificationEmail(otp, name = 'there') {
     <p>This code will expire in <strong>10 minutes</strong>. If you did not request this email, you can safely ignore it.</p>
     
     <div class="footer">
-      TestOpt CI/CD Execution Intelligence · Automated Security Notification
+      TestOpt Change-Aware Regression Testing Platform · Automated Security Notification
     </div>
   </div>
 </body>
