@@ -44,8 +44,30 @@ const pageFromHash = () =>
   PAGES.some(([key]) => key === location.hash.slice(1))
     ? location.hash.slice(1)
     : 'dashboard'
+function GitHubIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
+      <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+    </svg>
+  )
+}
+
+function GoogleIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"/>
+      <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.33 24 12 24z"/>
+      <path fill="#FBBC05" d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 9.99 0 12s.45 3.82 1.25 5.42l4.03-3.15z"/>
+      <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.33 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"/>
+    </svg>
+  )
+}
+
 function AuthScreen({ onAuthenticated }) {
   const [mode, setMode] = useState('login')
+  const [step, setStep] = useState('form') // 'form' | 'otp'
+  const [otp, setOtp] = useState('')
+  const [resendCooldown, setResendCooldown] = useState(0)
   const [form, setForm] = useState({
     name: '',
     organizationName: '',
@@ -53,20 +75,84 @@ function AuthScreen({ onAuthenticated }) {
     password: '',
   })
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
-  async function submit(event) {
-    event.preventDefault()
+
+  // Resend OTP countdown timer
+  useEffect(() => {
+    if (resendCooldown <= 0) return
+    const timer = setInterval(() => {
+      setResendCooldown((t) => (t <= 1 ? 0 : t - 1))
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [resendCooldown])
+
+  async function requestOtp() {
     setBusy(true)
     setError('')
     try {
-      const response = await fetch(`${API}/auth/${mode}`, {
+      const response = await fetch(`${API}/auth/send-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(
-          mode === 'login'
-            ? { email: form.email, password: form.password }
-            : form,
-        ),
+        body: JSON.stringify({ email: form.email, name: form.name }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.message || 'Could not send verification code.')
+      setStep('otp')
+      setResendCooldown(60)
+      setNotice(
+        data.provider === 'dev-console'
+          ? 'Development mode: 6-digit OTP logged to server terminal console.'
+          : `Verification code sent to ${form.email}.`
+      )
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function submit(event) {
+    event.preventDefault()
+    setError('')
+    setNotice('')
+
+    // In registration mode, Step 1 triggers real-time OTP delivery
+    if (mode === 'register' && step === 'form') {
+      await requestOtp()
+      return
+    }
+
+    // In registration mode, Step 2 verifies the OTP and creates the account
+    if (mode === 'register' && step === 'otp') {
+      setBusy(true)
+      try {
+        const response = await fetch(`${API}/auth/verify-otp-and-register`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...form, otp }),
+        })
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.message || 'Verification failed.')
+        onAuthenticated({
+          ...data,
+          organizations: data.organizations || [data.organization],
+        })
+      } catch (err) {
+        setError(err.message)
+      } finally {
+        setBusy(false)
+      }
+      return
+    }
+
+    // Login mode
+    setBusy(true)
+    try {
+      const response = await fetch(`${API}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: form.email, password: form.password }),
       })
       const data = await response.json()
       if (!response.ok) throw new Error(data.message || 'Could not sign in.')
@@ -74,43 +160,125 @@ function AuthScreen({ onAuthenticated }) {
         ...data,
         organizations: data.organizations || [data.organization],
       })
-    } catch (problem) {
-      setError(problem.message)
+    } catch (err) {
+      setError(err.message)
     } finally {
       setBusy(false)
     }
   }
+
   return (
     <main className="auth-shell">
       <section className="card auth-card">
         <Logo />
         <span className="eyebrow">REGRESSION TEST SELECTION & SCHEDULING</span>
         <h1>
-          {mode === 'login' ? 'Sign in to TestOpt' : 'Create an organization'}
+          {mode === 'login'
+            ? 'Sign in to TestOpt'
+            : step === 'otp'
+              ? 'Verify your email'
+              : 'Create an organization'}
         </h1>
         <p>
-          Select and schedule regression tests based on change impact, module
-          criticality, and execution budgets.
+          {step === 'otp'
+            ? `We sent a 6-digit verification code to ${form.email}.`
+            : 'Select and schedule regression tests based on change impact, module criticality, and execution budgets.'}
         </p>
-          <div className="seg">
-            {[
-              ['login', 'Sign in'],
-              ['register', 'Create organization'],
-            ].map(([key, text]) => (
+
+        {step === 'form' && (
+          <>
+            {/* Social OAuth 2.0 Providers */}
+            <div className="oauth-buttons">
+              <a className="btn-oauth" href={`${API}/auth/github`}>
+                <GitHubIcon />
+                Continue with GitHub
+              </a>
+              <a className="btn-oauth" href={`${API}/auth/google`}>
+                <GoogleIcon />
+                Continue with Google
+              </a>
+            </div>
+
+            <div className="auth-divider">or continue with email</div>
+
+            <div className="seg">
+              {[
+                ['login', 'Sign in'],
+                ['register', 'Create organization'],
+              ].map(([key, text]) => (
+                <button
+                  key={key}
+                  className={mode === key ? 'on' : ''}
+                  onClick={() => {
+                    setMode(key)
+                    setError('')
+                    setNotice('')
+                  }}
+                >
+                  {text}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+
+        {notice && (
+          <p className="notice" role="status">
+            {notice}
+          </p>
+        )}
+
+        {error && (
+          <p className="alert" role="alert">
+            {error}
+          </p>
+        )}
+
+        {step === 'otp' ? (
+          <form onSubmit={submit}>
+            <label>
+              Verification code
+              <input
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={6}
+                placeholder="123456"
+                className="otp-input"
+                autoFocus
+                required
+                value={otp}
+                onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
+              />
+            </label>
+            <div className="otp-meta">
               <button
-                key={key}
-                className={mode === key ? 'on' : ''}
-                onClick={() => setMode(key)}
+                type="button"
+                className="otp-resend"
+                disabled={resendCooldown > 0 || busy}
+                onClick={requestOtp}
               >
-                {text}
+                {resendCooldown > 0
+                  ? `Resend code in ${resendCooldown}s`
+                  : 'Resend code'}
               </button>
-            ))}
-          </div>
-          {error && (
-            <p className="alert" role="alert">
-              {error}
-            </p>
-          )}
+              <button
+                type="button"
+                className="otp-resend"
+                onClick={() => {
+                  setStep('form')
+                  setError('')
+                  setNotice('')
+                }}
+              >
+                Edit details
+              </button>
+            </div>
+            <button className="run" disabled={busy || otp.length < 6}>
+              {busy ? 'Verifying…' : 'Verify & create account →'}
+            </button>
+          </form>
+        ) : (
           <form onSubmit={submit}>
             {(mode === 'register'
               ? ['name', 'organizationName', 'email', 'password']
@@ -156,22 +324,55 @@ function AuthScreen({ onAuthenticated }) {
                 ? 'Working…'
                 : mode === 'login'
                   ? 'Sign in →'
-                  : 'Create account →'}
+                  : 'Send verification code →'}
             </button>
           </form>
-        </section>
-      </main>
+        )}
+      </section>
+    </main>
   )
 }
 
-export default function App() {
-  const [session, setSession] = useState(() => {
+function getInitialSession() {
+  if (typeof window === 'undefined') return null
+  const hash = window.location.hash
+  if (hash.includes('oauth_session=')) {
     try {
-      return JSON.parse(localStorage.getItem('testopt-session'))
+      const raw = hash.split('oauth_session=')[1].split('&')[0]
+      const data = JSON.parse(decodeURIComponent(raw))
+      if (data?.accessToken) {
+        localStorage.setItem('testopt-session', JSON.stringify(data))
+        window.location.hash = '#dashboard'
+        return data
+      }
     } catch {
-      return null
+      // ignore
     }
-  })
+  }
+  try {
+    return JSON.parse(localStorage.getItem('testopt-session'))
+  } catch {
+    return null
+  }
+}
+
+function getInitialOAuthError() {
+  if (typeof window === 'undefined') return ''
+  const hash = window.location.hash
+  if (hash.includes('oauth_error=')) {
+    try {
+      const raw = hash.split('oauth_error=')[1].split('&')[0]
+      window.location.hash = ''
+      return decodeURIComponent(raw)
+    } catch {
+      return 'OAuth sign-in failed.'
+    }
+  }
+  return ''
+}
+
+export default function App() {
+  const [session, setSession] = useState(getInitialSession)
   const [page, setPage] = useState(pageFromHash)
   const [projects, setProjects] = useState([]),
     [projectId, setProjectId] = useState('')
@@ -181,7 +382,7 @@ export default function App() {
     [currentId, setCurrentId] = useState('')
   const [loading, setLoading] = useState(false),
     [busy, setBusy] = useState(false)
-  const [error, setError] = useState(''),
+  const [error, setError] = useState(getInitialOAuthError),
     [notice, setNotice] = useState('')
   const [setup, setSetup] = useState(''),
     [newName, setNewName] = useState('')

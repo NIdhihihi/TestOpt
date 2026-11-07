@@ -5,9 +5,23 @@ CREATE TABLE IF NOT EXISTS users (
     user_id VARCHAR(50) PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
     email VARCHAR(150) UNIQUE NOT NULL,
-    password_hash VARCHAR(255) NOT NULL,
+    password_hash VARCHAR(255) NULL,
     role ENUM('DEVELOPER', 'TEST_MANAGER', 'ADMIN') NOT NULL DEFAULT 'DEVELOPER',
+    email_verified BOOLEAN NOT NULL DEFAULT FALSE,
+    auth_provider ENUM('LOCAL', 'GOOGLE', 'GITHUB') NOT NULL DEFAULT 'LOCAL',
+    auth_provider_id VARCHAR(255) NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS email_verification_codes (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    email VARCHAR(150) NOT NULL,
+    otp_hash VARCHAR(255) NOT NULL,
+    purpose VARCHAR(30) NOT NULL DEFAULT 'REGISTRATION',
+    expires_at DATETIME NOT NULL,
+    attempts_remaining INT NOT NULL DEFAULT 5,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_email_verification (email, expires_at)
 );
 
 CREATE TABLE IF NOT EXISTS projects (
