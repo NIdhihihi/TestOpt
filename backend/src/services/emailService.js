@@ -143,3 +143,4 @@ export async function sendVerificationEmail({ email, otp, name = 'there' }) {
 
   return { delivered: true, provider: 'dev-console', otp };
 }
+

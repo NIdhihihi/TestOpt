@@ -17,3 +17,4 @@ CREATE TABLE IF NOT EXISTS email_verification_codes (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_email_verification (email, expires_at)
 );
+
