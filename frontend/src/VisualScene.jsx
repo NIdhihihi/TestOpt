@@ -1,99 +1,838 @@
-import { useEffect, useRef } from 'react';
-import * as THREE from 'three';
+import { useMemo, useState, useRef, useCallback } from 'react'
 
-const PALETTE = [0x8b5cf6, 0x38bdf8, 0xfbbf24, 0xf97316, 0x34d399, 0xe879f9];
-export default function VisualScene({ city = false, analysis, tests = [], changedFiles = [], phase = 0, paused = false }) {
-  const host = useRef(null);
-  const state = useRef({ phase, paused });
-  useEffect(() => { state.current = { phase, paused }; }, [phase, paused]);
-  // Rebuild geometry only when the real source/test graph changes, not on animation frames.
-  const graph = JSON.stringify({ analysis, tests: tests.map(test => ({ path: test.path, modules: test.modules, score: test.score, decision: test.decision, status: test.result?.status })), changedFiles });
-  useEffect(() => {
-    const element = host.current;
-    let renderer;
-    try { renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false }); }
-    catch { element.dataset.fallback = 'true'; return undefined; }
-    const data = JSON.parse(graph);
-    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(city ? 50 : 55, 1, 0.1, 300);
-    renderer.setClearColor(0x070b16); renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    element.appendChild(renderer.domElement);
-    const geometries = [], materials = [], shapes = [], floors = [], buildings = [], labels = [];
-    const material = (color, opacity = 1) => { const item = new THREE.MeshBasicMaterial({ color, transparent: opacity < 1, opacity }); materials.push(item); return item; };
-    const lineMaterial = color => { const item = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.7 }); materials.push(item); return item; };
-    const geometry = item => { geometries.push(item); return item; };
-    if (!city) {
-      camera.position.z = 30;
-      const geo = geometry(new THREE.IcosahedronGeometry(1, 0));
-      for (let index = 0; index < 38; index++) {
-        const seed = index * 2.399963;
-        const mesh = new THREE.Mesh(geo, material(PALETTE[index % 5], 0.28)); mesh.material.wireframe = true;
-        mesh.position.set(Math.sin(seed * 1.7) * 35, Math.cos(seed * 1.3) * 20, -25 + (index % 10) * 3);
-        mesh.scale.setScalar(0.5 + (index % 8) * 0.23); scene.add(mesh);
-        shapes.push({ mesh, speed: 0.1 + (index % 6) * 0.1, phase: seed, y: mesh.position.y });
-      }
-    } else {
-      scene.fog = new THREE.Fog(0x070b16, 38, 120);
-      const grid = new THREE.GridHelper(44, 44, 0x1d2745, 0x121a31); scene.add(grid);
-      geometries.push(grid.geometry); materials.push(grid.material);
-      const names = data.analysis?.modules || [];
-      const side = Math.max(3, Math.ceil(Math.sqrt(names.length + 1)));
-      names.slice(0, 60).forEach((name, index) => {
-        let x = (index % side - (side - 1) / 2) * 5;
-        const z = (Math.floor(index / side) - (side - 1) / 2) * 5;
-        if (Math.abs(x) < 0.5 && Math.abs(z) < 0.5) x += 5;
-        const related = data.tests.filter(test => test.modules.includes(name));
-        const count = Math.max(1, related.length), height = count * 0.4 + 0.2;
-        const pos = new THREE.Vector3(x, 0, z);
-        const changed = data.changedFiles.includes(name);
-        const impacted = related.some(test => test.decision === 'Run');
-        const edge = new THREE.LineSegments(geometry(new THREE.EdgesGeometry(new THREE.BoxGeometry(2.3, height, 2.3))), lineMaterial(0x2e3a5c));
-        edge.position.set(x, height / 2, z); scene.add(edge);
-        const road = new THREE.Mesh(geometry(new THREE.BoxGeometry(pos.length(), 0.025, 0.16)), material(0x222b47));
-        road.position.set(x / 2, 0.02, z / 2); road.rotation.y = -Math.atan2(z, x); scene.add(road);
-        for (let floor = 0; floor < Math.min(related.length || 1, 30); floor++) {
-          const mesh = new THREE.Mesh(geometry(new THREE.BoxGeometry(2.1, 0.3, 2.1)), material(0x232b45, 0.95));
-          mesh.position.set(x, 0.25 + floor * 0.4, z); scene.add(mesh); floors.push({ mesh, changed, impacted, test: related[floor] });
+function shortName(filePath = '') {
+  const parts = filePath.split('/')
+  return parts.slice(-2).join('/') || filePath
+}
+
+function baseName(filePath = '') {
+  return filePath.split('/').pop() || filePath
+}
+
+export default function VisualScene({
+  city = false,
+  analysis,
+  tests = [],
+  changedFiles = [],
+  phase = 0,
+  paused = false,
+}) {
+  // If not on the pipeline view, render a clean, lightweight static backdrop.
+  if (!city) {
+    return <div className="scene backdrop" aria-hidden="true" />
+  }
+
+  return (
+    <DependencyGraphCanvas
+      analysis={analysis}
+      tests={tests}
+      changedFiles={changedFiles}
+      phase={phase}
+      paused={paused}
+    />
+  )
+}
+
+function DependencyGraphCanvas({
+  analysis,
+  tests = [],
+  changedFiles = [],
+  phase = 0,
+}) {
+  const svgRef = useRef(null)
+  const [transform, setTransform] = useState({ x: 60, y: 120, k: 0.9 })
+  const [isPanning, setIsPanning] = useState(false)
+  const [startPan, setStartPan] = useState({ x: 0, y: 0 })
+  const [hoveredNode, setHoveredNode] = useState(null)
+  const [selectedNode, setSelectedNode] = useState(null)
+
+  // 1. Extract raw modules, tests, and dependencies safely
+  const rawModules = useMemo(
+    () => analysis?.modules || [],
+    [analysis?.modules],
+  )
+  const rawDependencies = useMemo(
+    () => analysis?.dependencies || [],
+    [analysis?.dependencies],
+  )
+  const testList = useMemo(() => {
+    if (tests.length > 0) return tests
+    return (analysis?.tests || []).map((path) => ({ path, modules: [] }))
+  }, [tests, analysis?.tests])
+
+  // 2. Build graph data, detect cycles, and compute BFS impact traversal
+  const graphData = useMemo(() => {
+    const testPaths = new Set(testList.map((t) => t.path))
+    const allNodeIds = new Set([...rawModules, ...testPaths, ...changedFiles])
+
+    // Build adjacency: source -> targets (source imports target)
+    // and reverse adjacency: target -> sources (target is imported by source)
+    const outgoing = new Map()
+    const incoming = new Map()
+    allNodeIds.forEach((id) => {
+      outgoing.set(id, new Set())
+      incoming.set(id, new Set())
+    })
+
+    const edges = []
+    const edgeKeySet = new Set()
+
+    rawDependencies.forEach(({ source, target }) => {
+      if (allNodeIds.has(source) && allNodeIds.has(target)) {
+        const key = `${source}->${target}`
+        if (!edgeKeySet.has(key)) {
+          edgeKeySet.add(key)
+          outgoing.get(source)?.add(target)
+          incoming.get(target)?.add(source)
+          edges.push({ source, target, key })
         }
-        const label = document.createElement('span'); label.className = 'city-label'; label.textContent = name.replace(/^src\//, ''); element.appendChild(label); labels.push(label);
-        let beam;
-        if (changed) { beam = new THREE.Mesh(geometry(new THREE.CylinderGeometry(0.12, 0.12, 25, 8)), material(0xc4b5fd, 0.25)); beam.position.set(x, 12.5, z); scene.add(beam); }
-        buildings.push({ name, pos, edge, road, changed, impacted, top: height + 0.8, label, beam });
-      });
-    }
-    const resize = () => { const width = element.clientWidth || window.innerWidth, height = element.clientHeight || window.innerHeight; renderer.setSize(width, height); camera.aspect = width / height; camera.updateProjectionMatrix(); };
-    let pointerX = 0, pointerY = 0, frame, clock = 0, last = performance.now();
-    const pointer = event => { pointerX = event.clientX / window.innerWidth - 0.5; pointerY = event.clientY / window.innerHeight - 0.5; };
-    const vector = new THREE.Vector3();
-    resize(); window.addEventListener('resize', resize); window.addEventListener('pointermove', pointer);
-    const loop = now => {
-      const delta = Math.min(0.05, (now - last) / 1000); last = now;
-      if (!reduced && !state.current.paused) clock += delta;
-      if (!city) {
-        shapes.forEach(item => { item.mesh.rotation.x = clock * item.speed; item.mesh.rotation.y = clock * item.speed * 1.3; item.mesh.position.y = item.y + (reduced ? 0 : Math.sin(clock * 0.5 + item.phase) * 1.5); });
-        camera.position.x += (pointerX * 6 - camera.position.x) * 0.03; camera.position.y += (-pointerY * 4 - camera.position.y) * 0.03; camera.lookAt(0, 0, 0);
-      } else {
-        const stage = state.current.phase;
-        floors.forEach(item => {
-          let color = 0x232b45;
-          if (stage === 0) color = item.changed ? 0x8b5cf6 : 0x232b45;
-          if (stage === 1) color = item.changed || item.impacted ? 0x38bdf8 : 0x232b45;
-          if (stage === 2) color = item.test?.score != null ? item.test.score >= 0.5 ? 0xfbbf24 : 0x60a5fa : 0x232b45;
-          if (stage >= 3) color = item.test?.decision === 'Run' ? 0xf97316 : 0x3a4258;
-          if (stage >= 4 && item.test?.status) color = item.test.status === 'PASSED' ? 0x34d399 : ['FAILED', 'ERROR'].includes(item.test.status) ? 0xfb7185 : 0x64748b;
-          item.mesh.material.color.lerp(new THREE.Color(color), 0.12);
-        });
-        buildings.forEach(item => { item.edge.material.color.setHex(item.changed && stage === 0 ? 0xc4b5fd : item.impacted && stage < 4 ? 0x38bdf8 : 0x2e3a5c); if (item.beam) item.beam.material.opacity = stage === 0 ? 0.2 + Math.sin(clock * 2) * 0.12 : 0; });
-        const radius = Math.max(24, 17 / camera.aspect, Math.sqrt(buildings.length) * 6);
-        const angle = (reduced ? 0.6 : clock * 0.045) + pointerX * 0.4;
-        camera.position.set(Math.sin(angle) * radius, radius * 0.55, Math.cos(angle) * radius); camera.lookAt(0, 1.5, 0); camera.updateMatrixWorld();
-        buildings.forEach(item => { vector.set(item.pos.x, item.top, item.pos.z).project(camera); item.label.style.left = `${(vector.x * 0.5 + 0.5) * element.clientWidth}px`; item.label.style.top = `${(-vector.y * 0.5 + 0.5) * element.clientHeight}px`; item.label.hidden = vector.z > 1; });
       }
-      renderer.render(scene, camera); frame = requestAnimationFrame(loop);
-    };
-    frame = requestAnimationFrame(loop);
-    return () => { cancelAnimationFrame(frame); window.removeEventListener('resize', resize); window.removeEventListener('pointermove', pointer); labels.forEach(label => label.remove()); geometries.forEach(item => item.dispose()); materials.forEach(item => item.dispose()); renderer.dispose(); renderer.domElement.remove(); };
-  }, [city, graph]);
-  return <div ref={host} className={city ? 'scene city-scene' : 'scene backdrop'} aria-hidden="true" />;
+    })
+
+    // Also connect tests to their covered modules if not explicitly in dependencies
+    testList.forEach((test) => {
+      ;(test.modules || []).forEach((mod) => {
+        if (allNodeIds.has(mod)) {
+          const key = `${test.path}->${mod}`
+          if (!edgeKeySet.has(key)) {
+            edgeKeySet.add(key)
+            outgoing.get(test.path)?.add(mod)
+            incoming.get(mod)?.add(test.path)
+            edges.push({ source: test.path, target: mod, key, isTestCoverage: true })
+          }
+        }
+      })
+    })
+
+    // Cycle detection: identify back-edges in directed dependency graph
+    const cycleEdges = new Set()
+    const cycleNodes = new Set()
+    const visited = new Set()
+    const inStack = new Set()
+
+    function dfsCycle(node) {
+      visited.add(node)
+      inStack.add(node)
+      const neighbors = outgoing.get(node) || new Set()
+      neighbors.forEach((nbr) => {
+        if (inStack.has(nbr)) {
+          cycleEdges.add(`${node}->${nbr}`)
+          cycleNodes.add(node)
+          cycleNodes.add(nbr)
+        } else if (!visited.has(nbr)) {
+          dfsCycle(nbr)
+        }
+      })
+      inStack.delete(node)
+    }
+
+    allNodeIds.forEach((node) => {
+      if (!visited.has(node)) dfsCycle(node)
+    })
+
+    // BFS Transitive Impact Traversal from changedFiles:
+    // When a module changes, impact propagates along reverse edges (to files that import it)
+    const impactedNodes = new Set(changedFiles)
+    const impactedEdges = new Set()
+    const queue = [...changedFiles]
+    const bfsSeen = new Set(changedFiles)
+
+    while (queue.length > 0) {
+      const current = queue.shift()
+      const callers = incoming.get(current) || new Set()
+      callers.forEach((caller) => {
+        impactedEdges.add(`${caller}->${current}`)
+        impactedNodes.add(caller)
+        if (!bfsSeen.has(caller)) {
+          bfsSeen.add(caller)
+          queue.push(caller)
+        }
+      })
+    }
+
+    // Topological Column (Layer) Assignment with cycle tolerance
+    const layers = new Map()
+    // Tests are on the rightmost layer
+    // Leaf modules (imported, but import little) on the left
+    function computeLayer(node, depth = 0, path = new Set()) {
+      if (path.has(node) || depth > 10) return 0 // cycle break
+      if (layers.has(node)) return layers.get(node)
+      path.add(node)
+
+      const targets = outgoing.get(node) || new Set()
+      let maxChildLayer = -1
+      targets.forEach((target) => {
+        if (!testPaths.has(target)) {
+          const childLayer = computeLayer(target, depth + 1, new Set(path))
+          if (childLayer > maxChildLayer) maxChildLayer = childLayer
+        }
+      })
+      const myLayer = maxChildLayer + 1
+      layers.set(node, myLayer)
+      return myLayer
+    }
+
+    allNodeIds.forEach((id) => {
+      if (!testPaths.has(id)) computeLayer(id)
+    })
+
+    // Find maximum source module layer
+    let maxModuleLayer = 0
+    layers.forEach((l) => {
+      if (l > maxModuleLayer) maxModuleLayer = l
+    })
+
+    // Assign tests to the right of all modules
+    testPaths.forEach((testPath) => {
+      layers.set(testPath, maxModuleLayer + 1)
+    })
+
+    // Group nodes by layer
+    const layerBuckets = new Map()
+    allNodeIds.forEach((id) => {
+      const layer = layers.get(id) || 0
+      if (!layerBuckets.has(layer)) layerBuckets.set(layer, [])
+      layerBuckets.get(layer).push(id)
+    })
+
+    // Calculate (x, y) coordinates for each node
+    const COL_WIDTH = 250
+    const ROW_HEIGHT = 80
+    const nodeCoords = new Map()
+
+    const sortedLayers = Array.from(layerBuckets.keys()).sort((a, b) => a - b)
+    sortedLayers.forEach((layerIdx) => {
+      const bucket = layerBuckets.get(layerIdx) || []
+      // Sort: changed first, then impacted, then alphabetical
+      bucket.sort((a, b) => {
+        const aChanged = changedFiles.includes(a) ? -2 : impactedNodes.has(a) ? -1 : 0
+        const bChanged = changedFiles.includes(b) ? -2 : impactedNodes.has(b) ? -1 : 0
+        if (aChanged !== bChanged) return aChanged - bChanged
+        return a.localeCompare(b)
+      })
+
+      const totalH = bucket.length * ROW_HEIGHT
+      const startY = Math.max(80, 400 - totalH / 2)
+
+      bucket.forEach((id, rowIdx) => {
+        nodeCoords.set(id, {
+          x: layerIdx * COL_WIDTH + 80,
+          y: startY + rowIdx * ROW_HEIGHT,
+        })
+      })
+    })
+
+    return {
+      allNodeIds: Array.from(allNodeIds),
+      edges,
+      cycleEdges,
+      cycleNodes,
+      impactedNodes,
+      impactedEdges,
+      nodeCoords,
+      incoming,
+      outgoing,
+      testPaths,
+      sortedLayers,
+    }
+  }, [rawModules, rawDependencies, testList, changedFiles])
+
+  // Pan and Zoom handlers
+  const handleWheel = useCallback((e) => {
+    e.preventDefault()
+    const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9
+    setTransform((prev) => ({
+      ...prev,
+      k: Math.max(0.3, Math.min(2.5, prev.k * zoomFactor)),
+    }))
+  }, [])
+
+  const handleMouseDown = useCallback((e) => {
+    if (e.target.closest('.node-card, .graph-btn')) return
+    setIsPanning(true)
+    setStartPan({ x: e.clientX - transform.x, y: e.clientY - transform.y })
+  }, [transform.x, transform.y])
+
+  const handleMouseMove = useCallback((e) => {
+    if (!isPanning) return
+    setTransform((prev) => ({
+      ...prev,
+      x: e.clientX - startPan.x,
+      y: e.clientY - startPan.y,
+    }))
+  }, [isPanning, startPan.x, startPan.y])
+
+  const handleMouseUp = useCallback(() => {
+    setIsPanning(false)
+  }, [])
+
+  const resetView = useCallback(() => {
+    setTransform({ x: 80, y: 120, k: 0.9 })
+    setSelectedNode(null)
+  }, [])
+
+  const zoomIn = () => setTransform((t) => ({ ...t, k: Math.min(2.5, t.k * 1.2) }))
+  const zoomOut = () => setTransform((t) => ({ ...t, k: Math.max(0.3, t.k / 1.2) }))
+
+  const activeFocus = selectedNode || hoveredNode
+
+  return (
+    <div
+      className="dependency-graph-root"
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onWheel={handleWheel}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 0,
+        overflow: 'hidden',
+        background: 'radial-gradient(ellipse at 60% 30%, #0d1527 0%, #060913 75%)',
+        cursor: isPanning ? 'grabbing' : 'grab',
+        userSelect: 'none',
+      }}
+    >
+      <svg
+        ref={svgRef}
+        width="100%"
+        height="100%"
+        style={{ display: 'block', width: '100%', height: '100%' }}
+      >
+        <defs>
+          {/* Subtle background grid pattern */}
+          <pattern
+            id="graph-grid"
+            width="32"
+            height="32"
+            patternUnits="userSpaceOnUse"
+          >
+            <circle cx="2" cy="2" r="1" fill="#1e293b" opacity="0.6" />
+          </pattern>
+
+          {/* Standard dependency arrow marker */}
+          <marker
+            id="arrow-default"
+            viewBox="0 0 10 10"
+            refX="9"
+            refY="5"
+            markerWidth="6"
+            markerHeight="6"
+            orient="auto-start-reverse"
+          >
+            <path d="M 0 1.5 L 10 5 L 0 8.5 z" fill="#334155" />
+          </marker>
+
+          {/* Impacted dependency arrow marker (Cyan) */}
+          <marker
+            id="arrow-impacted"
+            viewBox="0 0 10 10"
+            refX="9"
+            refY="5"
+            markerWidth="7"
+            markerHeight="7"
+            orient="auto-start-reverse"
+          >
+            <path d="M 0 1.5 L 10 5 L 0 8.5 z" fill="#38bdf8" />
+          </marker>
+
+          {/* Changed module arrow marker (Purple) */}
+          <marker
+            id="arrow-changed"
+            viewBox="0 0 10 10"
+            refX="9"
+            refY="5"
+            markerWidth="7"
+            markerHeight="7"
+            orient="auto-start-reverse"
+          >
+            <path d="M 0 1.5 L 10 5 L 0 8.5 z" fill="#a855f7" />
+          </marker>
+
+          {/* Circular dependency arrow marker (Amber) */}
+          <marker
+            id="arrow-cycle"
+            viewBox="0 0 10 10"
+            refX="9"
+            refY="5"
+            markerWidth="7"
+            markerHeight="7"
+            orient="auto-start-reverse"
+          >
+            <path d="M 0 1.5 L 10 5 L 0 8.5 z" fill="#f59e0b" />
+          </marker>
+        </defs>
+
+        {/* Blueprint background grid */}
+        <rect width="100%" height="100%" fill="url(#graph-grid)" />
+
+        {/* Transformed graph viewport */}
+        <g
+          transform={`translate(${transform.x}, ${transform.y}) scale(${transform.k})`}
+        >
+          {/* Layer Headers / Columns */}
+          {graphData.sortedLayers.map((layerIdx, idx) => {
+            const isTestCol = idx === graphData.sortedLayers.length - 1
+            const colX = layerIdx * 250 + 80
+            return (
+              <g key={layerIdx} opacity={0.65}>
+                <line
+                  x1={colX + 90}
+                  y1={20}
+                  x2={colX + 90}
+                  y2={850}
+                  stroke="#1e293b"
+                  strokeDasharray="4 6"
+                />
+                <text
+                  x={colX + 90}
+                  y={45}
+                  textAnchor="middle"
+                  fill="#64748b"
+                  fontSize="11"
+                  fontWeight="600"
+                  letterSpacing="1"
+                  fontFamily="system-ui, -apple-system, sans-serif"
+                >
+                  {isTestCol
+                    ? 'CANDIDATE TEST SUITES'
+                    : idx === 0
+                      ? 'DIRECT SOURCE MODULES'
+                      : `TRANSITIVE DEPENDENCIES (L${idx})`}
+                </text>
+              </g>
+            )
+          })}
+
+          {/* Directed Edges */}
+          {graphData.edges.map((edge) => {
+            const srcCoord = graphData.nodeCoords.get(edge.source)
+            const tgtCoord = graphData.nodeCoords.get(edge.target)
+            if (!srcCoord || !tgtCoord) return null
+
+            // Node card is 180px wide, 48px high
+            const startX = srcCoord.x + 90
+            const startY = srcCoord.y + 24
+            const endX = tgtCoord.x + 90
+            const endY = tgtCoord.y + 24
+
+            const isCycle = graphData.cycleEdges.has(edge.key)
+            const isImpacted = graphData.impactedEdges.has(edge.key)
+            const isConnectedToFocus =
+              activeFocus &&
+              (edge.source === activeFocus || edge.target === activeFocus)
+
+            // Dynamic edge styling based on pipeline phase and focus
+            let strokeColor = '#1e293b'
+            let marker = 'url(#arrow-default)'
+            let strokeWidth = 1.5
+            let strokeDasharray = 'none'
+            let opacity = 0.55
+
+            if (isCycle) {
+              strokeColor = '#f59e0b'
+              marker = 'url(#arrow-cycle)'
+              strokeWidth = 2
+              strokeDasharray = '4 3'
+              opacity = 0.9
+            } else if (isImpacted && phase >= 1) {
+              strokeColor = '#38bdf8'
+              marker = 'url(#arrow-impacted)'
+              strokeWidth = 2.4
+              strokeDasharray = '6 4'
+              opacity = 1
+            } else if (isConnectedToFocus) {
+              strokeColor = '#94a3b8'
+              strokeWidth = 2
+              opacity = 0.95
+            }
+
+            // Smooth cubic bezier path between nodes
+            const dx = Math.abs(endX - startX) * 0.55
+            const pathData =
+              isCycle && startX === endX
+                ? `M ${startX} ${startY} C ${startX + 60} ${startY + 20}, ${endX + 60} ${endY - 20}, ${endX} ${endY}`
+                : `M ${startX} ${startY} C ${startX - dx} ${startY}, ${endX + dx} ${endY}, ${endX} ${endY}`
+
+            return (
+              <path
+                key={edge.key}
+                d={pathData}
+                fill="none"
+                stroke={strokeColor}
+                strokeWidth={strokeWidth}
+                strokeDasharray={strokeDasharray}
+                opacity={opacity}
+                markerEnd={marker}
+                style={{
+                  transition: 'stroke 0.2s ease, opacity 0.2s ease',
+                  animation:
+                    isImpacted && phase >= 1
+                      ? 'edgeFlow 1.5s linear infinite'
+                      : 'none',
+                }}
+              />
+            )
+          })}
+
+          {/* Node Cards */}
+          {graphData.allNodeIds.map((id) => {
+            const coord = graphData.nodeCoords.get(id)
+            if (!coord) return null
+
+            const isTest = graphData.testPaths.has(id)
+            const isChanged = changedFiles.includes(id)
+            const isImpacted = graphData.impactedNodes.has(id)
+            const isCycle = graphData.cycleNodes.has(id)
+
+            const testObj = isTest ? testList.find((t) => t.path === id) : null
+            const isSelected = testObj?.decision === 'Run'
+            const testStatus = testObj?.result?.status || testObj?.status
+
+            const isFocus = activeFocus === id
+            const isConnectedToFocus =
+              activeFocus &&
+              (graphData.incoming.get(activeFocus)?.has(id) ||
+                graphData.outgoing.get(activeFocus)?.has(id))
+
+            // Background & Border colors based on Stage
+            let bg = '#0d1527'
+            let border = '#1e293b'
+            let glow = 'none'
+
+            if (isChanged && phase >= 0) {
+              border = '#a855f7'
+              bg = '#1c1033'
+              glow = '0 0 14px rgba(168, 85, 247, 0.35)'
+            } else if (isImpacted && phase >= 1) {
+              border = '#38bdf8'
+              bg = '#0b2038'
+              glow = '0 0 12px rgba(56, 189, 248, 0.3)'
+            }
+
+            if (isTest) {
+              if (phase >= 3) {
+                if (isSelected) {
+                  border = '#f97316'
+                  bg = '#2a1708'
+                } else {
+                  border = '#334155'
+                  bg = '#0f172a'
+                }
+              }
+              if (phase >= 4 && testStatus) {
+                if (testStatus === 'PASSED') {
+                  border = '#10b981'
+                  bg = '#06261c'
+                  glow = '0 0 14px rgba(16, 185, 129, 0.3)'
+                } else if (['FAILED', 'ERROR'].includes(testStatus)) {
+                  border = '#f43f5e'
+                  bg = '#2b0c16'
+                  glow = '0 0 14px rgba(244, 63, 94, 0.35)'
+                }
+              }
+            }
+
+            if (isFocus) {
+              border = '#f8fafc'
+              glow = '0 0 20px rgba(248, 250, 252, 0.45)'
+            } else if (activeFocus && !isConnectedToFocus) {
+              bg = '#090d18'
+              border = '#151d30'
+            }
+
+            const cardW = 180
+            const cardH = isTest ? 54 : 48
+
+            return (
+              <g
+                key={id}
+                className="node-card"
+                transform={`translate(${coord.x}, ${coord.y})`}
+                onClick={() =>
+                  setSelectedNode((prev) => (prev === id ? null : id))
+                }
+                onMouseEnter={() => setHoveredNode(id)}
+                onMouseLeave={() => setHoveredNode(null)}
+                style={{ cursor: 'pointer' }}
+              >
+                {/* Node Box */}
+                <rect
+                  width={cardW}
+                  height={cardH}
+                  rx="8"
+                  ry="8"
+                  fill={bg}
+                  stroke={border}
+                  strokeWidth={isFocus || isChanged ? 2 : 1.2}
+                  style={{
+                    filter: glow !== 'none' ? `drop-shadow(${glow})` : 'none',
+                    transition: 'all 0.2s ease',
+                  }}
+                />
+
+                {/* Node Status Indicator Pill / Dot */}
+                <circle
+                  cx="14"
+                  cy={cardH / 2}
+                  r="4.5"
+                  fill={
+                    isTest
+                      ? testStatus === 'PASSED'
+                        ? '#10b981'
+                        : testStatus === 'FAILED'
+                          ? '#f43f5e'
+                          : isSelected
+                            ? '#f97316'
+                            : '#64748b'
+                      : isChanged
+                        ? '#a855f7'
+                        : isImpacted
+                          ? '#38bdf8'
+                          : '#475569'
+                  }
+                />
+
+                {/* Node Title (File Name) */}
+                <text
+                  x="26"
+                  y={isTest ? 22 : 24}
+                  fill="#f1f5f9"
+                  fontSize="12"
+                  fontWeight="600"
+                  fontFamily="ui-monospace, SFMono-Regular, monospace"
+                >
+                  {baseName(id)}
+                </text>
+
+                {/* Node Subtitle / Meta Tag */}
+                <text
+                  x="26"
+                  y={isTest ? 38 : 37}
+                  fill="#94a3b8"
+                  fontSize="9.5"
+                  fontFamily="system-ui, -apple-system, sans-serif"
+                >
+                  {isTest ? (
+                    testStatus ? (
+                      `${testStatus} · ${isSelected ? 'Selected' : 'Skipped'}`
+                    ) : testObj?.score != null ? (
+                      `Score: ${testObj.score.toFixed(3)} · ${testObj.decision || 'Candidate'}`
+                    ) : (
+                      'Candidate test file'
+                    )
+                  ) : isChanged ? (
+                    'MODIFIED SOURCE'
+                  ) : isImpacted ? (
+                    'TRANSITIVE IMPACT'
+                  ) : isCycle ? (
+                    'CIRCULAR IMPORT'
+                  ) : (
+                    shortName(id)
+                  )}
+                </text>
+
+                {/* Right Badge for Changed / Impacted / Score */}
+                {isChanged && (
+                  <g transform={`translate(${cardW - 32}, 8)`}>
+                    <rect
+                      width="24"
+                      height="14"
+                      rx="4"
+                      fill="#a855f726"
+                      stroke="#a855f7"
+                      strokeWidth="0.8"
+                    />
+                    <text
+                      x="12"
+                      y="10"
+                      textAnchor="middle"
+                      fill="#d8b4fe"
+                      fontSize="8"
+                      fontWeight="700"
+                    >
+                      Δ
+                    </text>
+                  </g>
+                )}
+
+                {isCycle && !isChanged && (
+                  <g transform={`translate(${cardW - 32}, 8)`}>
+                    <rect
+                      width="24"
+                      height="14"
+                      rx="4"
+                      fill="#f59e0b26"
+                      stroke="#f59e0b"
+                      strokeWidth="0.8"
+                    />
+                    <text
+                      x="12"
+                      y="10"
+                      textAnchor="middle"
+                      fill="#fbbf24"
+                      fontSize="8"
+                      fontWeight="700"
+                    >
+                      ↻
+                    </text>
+                  </g>
+                )}
+              </g>
+            )
+          })}
+        </g>
+      </svg>
+
+      {/* Floating Canvas Controls */}
+      <div
+        className="graph-controls"
+        style={{
+          position: 'fixed',
+          top: '100px',
+          left: '260px',
+          display: 'flex',
+          gap: '6px',
+          zIndex: 5,
+        }}
+      >
+        <button
+          className="btn graph-btn"
+          onClick={zoomIn}
+          title="Zoom In"
+          style={{ padding: '6px 11px', fontSize: '13px' }}
+        >
+          +
+        </button>
+        <button
+          className="btn graph-btn"
+          onClick={zoomOut}
+          title="Zoom Out"
+          style={{ padding: '6px 11px', fontSize: '13px' }}
+        >
+          −
+        </button>
+        <button
+          className="btn graph-btn"
+          onClick={resetView}
+          title="Fit Graph to Center"
+          style={{ padding: '6px 11px', fontSize: '12px' }}
+        >
+          Fit View
+        </button>
+      </div>
+
+      {/* Active Node Detail Inspector Card */}
+      {activeFocus && (
+        <div
+          className="card graph-inspector"
+          style={{
+            position: 'fixed',
+            top: '200px',
+            right: '26px',
+            width: '290px',
+            zIndex: 10,
+            padding: '16px',
+            background: '#0d1424fa',
+            borderColor: '#1e293b',
+            boxShadow: '0 20px 40px rgba(0,0,0,0.6)',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'baseline',
+            }}
+          >
+            <span
+              className="eyebrow"
+              style={{
+                color: graphData.testPaths.has(activeFocus)
+                  ? '#38bdf8'
+                  : changedFiles.includes(activeFocus)
+                    ? '#a855f7'
+                    : '#94a3b8',
+                marginBottom: '4px',
+              }}
+            >
+              {graphData.testPaths.has(activeFocus)
+                ? 'TEST SUITE NODE'
+                : 'SOURCE MODULE NODE'}
+            </span>
+            {selectedNode === activeFocus && (
+              <button
+                onClick={() => setSelectedNode(null)}
+                style={{
+                  background: 'none',
+                  border: 0,
+                  color: '#64748b',
+                  cursor: 'pointer',
+                  fontSize: '11px',
+                }}
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          <h3
+            style={{
+              fontSize: '15px',
+              wordBreak: 'break-all',
+              marginBottom: '6px',
+            }}
+          >
+            {activeFocus}
+          </h3>
+          <p
+            style={{
+              fontSize: '12px',
+              color: '#94a3b8',
+              lineHeight: 1.4,
+              marginBottom: '12px',
+            }}
+          >
+            {changedFiles.includes(activeFocus)
+              ? 'Direct code change delta detected. Impact will propagate to callers and candidate tests.'
+              : graphData.impactedNodes.has(activeFocus)
+                ? 'Transitively impacted by changed files via import dependency chain.'
+                : 'Unchanged module. Kept in baseline.'}
+          </p>
+
+          <div
+            style={{
+              fontSize: '11px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '6px',
+              borderTop: '1px solid #1e293b',
+              paddingTop: '10px',
+            }}
+          >
+            <div>
+              <span style={{ color: '#64748b' }}>Imports ({graphData.outgoing.get(activeFocus)?.size || 0}): </span>
+              <span style={{ color: '#cbd5e1' }}>
+                {Array.from(graphData.outgoing.get(activeFocus) || [])
+                  .map(baseName)
+                  .join(', ') || 'None'}
+              </span>
+            </div>
+            <div>
+              <span style={{ color: '#64748b' }}>Imported by ({graphData.incoming.get(activeFocus)?.size || 0}): </span>
+              <span style={{ color: '#cbd5e1' }}>
+                {Array.from(graphData.incoming.get(activeFocus) || [])
+                  .map(baseName)
+                  .join(', ') || 'None'}
+              </span>
+            </div>
+            {graphData.cycleNodes.has(activeFocus) && (
+              <div style={{ color: '#f59e0b', marginTop: '4px' }}>
+                ⚠ Participates in a circular dependency cycle.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
 }

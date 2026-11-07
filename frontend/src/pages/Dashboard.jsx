@@ -43,7 +43,8 @@ export function Dashboard({
       {!version && (
         <section className="card onboarding">
           <div>
-            <h2>Upload your project</h2>
+            <span className="eyebrow">BASELINE INITIALIZATION</span>
+            <h2>Establish a full suite baseline to enable selective testing</h2>
             <p>
               Choose the source folder containing package.json. TestOpt
               discovers its tests and dependencies, then guides you through the

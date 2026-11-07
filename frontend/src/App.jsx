@@ -83,11 +83,15 @@ function AuthScreen({ onAuthenticated }) {
   return (
     <main className="auth-shell">
       <section className="card auth-card">
-          <Logo />
-          <h1>
-            {mode === 'login' ? 'Sign in to TestOpt' : 'Create an organization'}
-          </h1>
-          <p>Select and schedule tests for your code changes.</p>
+        <Logo />
+        <span className="eyebrow">REGRESSION TEST SELECTION & SCHEDULING</span>
+        <h1>
+          {mode === 'login' ? 'Sign in to TestOpt' : 'Create an organization'}
+        </h1>
+        <p>
+          Select and schedule regression tests based on change impact, module
+          criticality, and execution budgets.
+        </p>
           <div className="seg">
             {[
               ['login', 'Sign in'],
@@ -670,12 +674,12 @@ export default function App() {
   )
   const captions = [
     [
-      'Source change delta',
+      'Change Detection & Delta Analysis',
       `${model.changedFiles.length} changed files in ${version ? versionNumber(versionId) : 'your project'}. Highlights mark changed source modules.`,
     ],
     [
-      'Dependency impact analysis',
-      `${model.analysis?.dependencies?.length || 0} discovered dependency links connect source modules. Spatial layout shows inspected modules.`,
+      'Dependency Impact Analysis',
+      `${model.analysis?.dependencies?.length || 0} discovered dependency links connect source modules. Directed graph highlights transitive BFS traversal.`,
     ],
     [
       'Test valuation',
@@ -794,9 +798,9 @@ export default function App() {
               </span>
             ))}
             <small>
-              Module layout maps imports
+              Directed AST dependency DAG
               <br />
-              and assigned test files.
+              with cycle detection & BFS impact.
             </small>
           </aside>
         </div>
@@ -837,6 +841,9 @@ export default function App() {
           <main className="workspace">
             <header className="head">
               <div>
+                <span className="eyebrow">
+                  REGRESSION TEST SELECTION & SCHEDULING
+                </span>
                 <h1>{PAGES.find(([key]) => key === page)?.[1]}</h1>
                 <div className="sub">
                   {project?.projectName || 'Your testing workspace'}

@@ -25,3 +25,7 @@ a{color:var(--sky);text-decoration:none}button{cursor:pointer;color:inherit}butt
 .terminal-copy{margin-left:auto;padding:3px 8px;font-size:11px;height:auto}
 .terminal-content{margin:0;padding:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px;line-height:1.5;max-height:280px;overflow:auto;background:transparent;color:#e2e8f0;white-space:pre-wrap;word-break:break-word}
 .terminal-meta{font-size:11px;color:var(--mut);margin-top:6px}
+@keyframes edgeFlow{from{stroke-dashoffset:20}to{stroke-dashoffset:0}}
+.dependency-graph-root{outline:none}
+.graph-btn{background:#0d1527cc;border:1px solid var(--line);backdrop-filter:blur(8px)}
+.graph-btn:hover{background:#1e293bcc}
