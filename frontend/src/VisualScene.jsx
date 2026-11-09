@@ -22,8 +22,20 @@ export default function VisualScene({
   changedModules = [],
   plan = null,
   timeBudget = null,
+  workerCount = 2,
   algorithm = 'GREEDY',
+  algorithmDetails = null,
   weights = null,
+  coverageGap = [],
+  isValidationComplete = false,
+  fallbackReasons = [],
+  baselineUsable = true,
+  measuredSelectedDuration = null,
+  realizedSavings = null,
+  fullEstimate = null,
+  selectedEstimate = null,
+  savedEstimate = null,
+  notice = '',
   phase = 0,
   paused = false,
 }) {
@@ -39,8 +51,17 @@ export default function VisualScene({
         changedFiles={changedFiles}
         changedModules={changedModules}
         timeBudget={timeBudget}
+        workerCount={workerCount}
         algorithm={algorithm}
+        algorithmDetails={algorithmDetails}
         weights={weights}
+        coverageGap={coverageGap}
+        isValidationComplete={isValidationComplete}
+        measuredSelectedDuration={measuredSelectedDuration}
+        realizedSavings={realizedSavings}
+        fullEstimate={fullEstimate}
+        selectedEstimate={selectedEstimate}
+        savedEstimate={savedEstimate}
       />
     )
   }
@@ -70,8 +91,20 @@ export default function VisualScene({
       changedModules={changedModules}
       plan={plan}
       timeBudget={timeBudget}
+      workerCount={workerCount}
       algorithm={algorithm}
+      algorithmDetails={algorithmDetails}
       weights={weights}
+      coverageGap={coverageGap}
+      isValidationComplete={isValidationComplete}
+      fallbackReasons={fallbackReasons}
+      baselineUsable={baselineUsable}
+      measuredSelectedDuration={measuredSelectedDuration}
+      realizedSavings={realizedSavings}
+      fullEstimate={fullEstimate}
+      selectedEstimate={selectedEstimate}
+      savedEstimate={savedEstimate}
+      notice={notice}
       phase={phase}
       paused={paused}
     />
@@ -85,8 +118,20 @@ function PipelineScene3DContainer({
   changedModules = [],
   plan = null,
   timeBudget = null,
+  workerCount = 2,
   algorithm = 'GREEDY',
+  algorithmDetails = null,
   weights = null,
+  coverageGap = [],
+  isValidationComplete = false,
+  fallbackReasons = [],
+  baselineUsable = true,
+  measuredSelectedDuration = null,
+  realizedSavings = null,
+  fullEstimate = null,
+  selectedEstimate = null,
+  savedEstimate = null,
+  notice = '',
   phase = 0,
   paused = false,
 }) {
@@ -123,7 +168,7 @@ function PipelineScene3DContainer({
         inset: 0,
         zIndex: 0,
         display: 'grid',
-        gridTemplateColumns: '330px minmax(0, 1fr)',
+        gridTemplateColumns: '340px minmax(0, 1fr)',
         gap: '16px',
         padding: '100px 20px 20px',
         background: '#070b16',
@@ -137,8 +182,20 @@ function PipelineScene3DContainer({
         onSelectItem={handleSelectNode}
         onFocusItem={handleFocusItem}
         timeBudget={timeBudget}
+        workerCount={workerCount}
         algorithm={algorithm}
+        algorithmDetails={algorithmDetails}
         weights={weights}
+        coverageGap={coverageGap}
+        isValidationComplete={isValidationComplete}
+        fallbackReasons={fallbackReasons}
+        baselineUsable={baselineUsable}
+        measuredSelectedDuration={measuredSelectedDuration}
+        realizedSavings={realizedSavings}
+        fullEstimate={fullEstimate}
+        selectedEstimate={selectedEstimate}
+        savedEstimate={savedEstimate}
+        notice={notice}
       />
       <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: 0 }}>
         <PipelineScene3D

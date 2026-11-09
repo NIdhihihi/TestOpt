@@ -8,8 +8,20 @@ export default function PipelineSidebarHUD({
   onSelectItem,
   onFocusItem,
   timeBudget,
+  workerCount = 2,
   algorithm = 'GREEDY',
+  algorithmDetails,
   weights,
+  coverageGap = [],
+  isValidationComplete = false,
+  fallbackReasons = [],
+  baselineUsable = true,
+  measuredSelectedDuration = null,
+  realizedSavings = null,
+  fullEstimate = null,
+  selectedEstimate = null,
+  savedEstimate = null,
+  notice,
 }) {
   const [searchQuery, setSearchQuery] = useState('')
 
@@ -54,9 +66,9 @@ export default function PipelineSidebarHUD({
     <aside
       style={{
         position: 'relative',
-        width: '330px',
+        width: '340px',
         height: 'clamp(560px, calc(100vh - 180px), 860px)',
-        background: 'rgba(12, 18, 36, 0.88)',
+        background: 'rgba(12, 18, 36, 0.92)',
         border: '1px solid rgba(255, 255, 255, 0.12)',
         borderRadius: '16px',
         backdropFilter: 'blur(12px)',
@@ -229,6 +241,23 @@ export default function PipelineSidebarHUD({
                     : 'Unaffected baseline'}
               </span>
 
+              {/* Assumption Notice for module */}
+              <div
+                style={{
+                  background: 'rgba(255, 255, 255, 0.04)',
+                  border: '1px solid #1e293b',
+                  borderRadius: '6px',
+                  padding: '6px 8px',
+                  fontSize: '11px',
+                  color: '#94a3b8',
+                  margin: '8px 0',
+                }}
+              >
+                <span>Criticality: </span>
+                <strong style={{ color: '#e2e8f0' }}>5 / 10</strong>
+                <small style={{ color: '#64748b' }}> (Default unconfigured tier)</small>
+              </div>
+
               <dl
                 style={{
                   display: 'grid',
@@ -279,48 +308,124 @@ export default function PipelineSidebarHUD({
                     width: '10px',
                     height: '10px',
                     borderRadius: '50%',
-                    background: selectedItem.isSelected ? '#34d399' : '#64748b',
+                    background: selectedItem.isInfraError
+                      ? '#f59e0b'
+                      : selectedItem.isFailed
+                        ? '#f43f5e'
+                        : selectedItem.isSelected
+                          ? '#34d399'
+                          : '#64748b',
                   }}
                 />
                 <strong style={{ fontSize: '14px', wordBreak: 'break-all' }}>{selectedItem.name}</strong>
               </div>
 
-              <span
-                className="chip"
-                style={{
-                  fontSize: '11px',
-                  marginBottom: '10px',
-                  color: selectedItem.isSelected ? '#34d399' : '#64748b',
-                  borderColor: selectedItem.isSelected ? '#34d39955' : '#334155',
-                }}
-              >
-                {selectedItem.isSelected
-                  ? 'Selected (Within Budget)'
-                  : selectedItem.isSkipped
-                    ? 'Skipped (Exceeds Budget)'
-                    : 'Pending Decision'}
-              </span>
+              {/* Execution Status / Skip Disclaimer */}
+              {selectedItem.isSkipped ? (
+                <div
+                  style={{
+                    background: 'rgba(100, 116, 139, 0.08)',
+                    border: '1px solid rgba(100, 116, 139, 0.25)',
+                    borderRadius: '8px',
+                    padding: '8px 10px',
+                    fontSize: '11px',
+                    color: '#94a3b8',
+                    marginBottom: '10px',
+                  }}
+                >
+                  <strong style={{ color: '#cbd5e1', display: 'block', marginBottom: '2px' }}>
+                    Skipped: No Execution Result Recorded
+                  </strong>
+                  Excluded to adhere to the {timeBudget ? `${timeBudget} min` : 'configured'} budget. This test was not executed and has no pass/fail data for this commit.
+                </div>
+              ) : selectedItem.isInfraError ? (
+                <div
+                  style={{
+                    background: 'rgba(245, 158, 11, 0.1)',
+                    border: '1px solid rgba(245, 158, 11, 0.35)',
+                    borderRadius: '8px',
+                    padding: '8px 10px',
+                    fontSize: '11px',
+                    color: '#fde68a',
+                    marginBottom: '10px',
+                  }}
+                >
+                  <strong style={{ display: 'block', marginBottom: '2px' }}>
+                    Infrastructure Error (Not Code Failure)
+                  </strong>
+                  Worker execution error occurred (queue/runtime failure). Code regression status is inconclusive.
+                </div>
+              ) : selectedItem.isFailed ? (
+                <div
+                  style={{
+                    background: 'rgba(244, 63, 94, 0.1)',
+                    border: '1px solid rgba(244, 63, 94, 0.35)',
+                    borderRadius: '8px',
+                    padding: '8px 10px',
+                    fontSize: '11px',
+                    color: '#fda4af',
+                    marginBottom: '10px',
+                  }}
+                >
+                  <strong style={{ display: 'block', marginBottom: '2px' }}>
+                    Regression Caught (Test Assertion Failure)
+                  </strong>
+                  Defect caught in regression suite prior to merge.
+                </div>
+              ) : selectedItem.isPass ? (
+                <div
+                  style={{
+                    background: 'rgba(16, 185, 129, 0.08)',
+                    border: '1px solid rgba(16, 185, 129, 0.25)',
+                    borderRadius: '8px',
+                    padding: '8px 10px',
+                    fontSize: '11px',
+                    color: '#6ee7b7',
+                    marginBottom: '10px',
+                  }}
+                >
+                  <strong style={{ display: 'block', marginBottom: '2px' }}>
+                    Passed (Code Verification Successful)
+                  </strong>
+                  All assertions verified against covered modules.
+                </div>
+              ) : (
+                <span
+                  className="chip"
+                  style={{
+                    fontSize: '11px',
+                    marginBottom: '10px',
+                    color: selectedItem.isSelected ? '#34d399' : '#64748b',
+                    borderColor: selectedItem.isSelected ? '#34d39955' : '#334155',
+                  }}
+                >
+                  {selectedItem.isSelected ? 'Selected (Within Budget)' : 'Pending Run'}
+                </span>
+              )}
 
-              {/* Big Value Score */}
-              <div style={{ marginTop: '10px' }}>
-                <div style={{ fontSize: '26px', fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: '#38bdf8' }}>
+              {/* Big Value Score with Explicit Ranking Label */}
+              <div style={{ marginTop: '8px' }}>
+                <div style={{ fontSize: '24px', fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: '#38bdf8' }}>
                   {selectedItem.score != null ? selectedItem.score.toFixed(3) : '—'}
                 </div>
-                <div style={{ fontSize: '11px', color: '#94a3b8' }}>
-                  Optimization Value Score ({algorithm})
+                <div style={{ fontSize: '11px', fontWeight: 600, color: '#e2e8f0' }}>
+                  Efficiency Ranking Value (Not Defect Probability)
+                </div>
+                <div style={{ fontSize: '10px', color: '#64748b', lineHeight: 1.4, marginTop: '2px' }}>
+                  Relative rank used to schedule into worker slots under budget constraints.
                 </div>
               </div>
 
               {/* Real 4 Factors Breakdown */}
               <div style={{ margin: '14px 0', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 <div style={{ fontSize: '11px', color: '#64748b', textTransform: 'uppercase', letterSpacing: '1px' }}>
-                  Scoring Factor Components
+                  Scoring Factor Breakdown
                 </div>
 
                 <div className="sg" style={{ margin: 0 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#94a3b8', marginBottom: '3px' }}>
                     <span>Relevance (w₁: {w.relevance})</span>
-                    <span>{(selectedItem.factors?.relevance ?? 0.5).toFixed(2)}</span>
+                    <span>{(selectedItem.factors?.relevance ?? 0.5).toFixed(3)}</span>
                   </div>
                   <div className="track" style={{ height: '5px' }}>
                     <i style={{ width: `${Math.min(100, Math.round((selectedItem.factors?.relevance ?? 0.5) * 100))}%`, background: '#8b5cf6' }} />
@@ -330,7 +435,7 @@ export default function PipelineSidebarHUD({
                 <div className="sg" style={{ margin: 0 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#94a3b8', marginBottom: '3px' }}>
                     <span>Criticality (w₂: {w.criticality})</span>
-                    <span>{(selectedItem.factors?.criticality ?? 0.5).toFixed(2)}</span>
+                    <span>{(selectedItem.factors?.criticality ?? 0.5).toFixed(3)}</span>
                   </div>
                   <div className="track" style={{ height: '5px' }}>
                     <i style={{ width: `${Math.min(100, Math.round((selectedItem.factors?.criticality ?? 0.5) * 100))}%`, background: '#fbbf24' }} />
@@ -340,7 +445,7 @@ export default function PipelineSidebarHUD({
                 <div className="sg" style={{ margin: 0 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#94a3b8', marginBottom: '3px' }}>
                     <span>Failure History (w₃: {w.failureRate})</span>
-                    <span>{(selectedItem.factors?.failureRate ?? 0).toFixed(2)}</span>
+                    <span>{(selectedItem.factors?.failureRate ?? 0).toFixed(3)}</span>
                   </div>
                   <div className="track" style={{ height: '5px' }}>
                     <i style={{ width: `${Math.min(100, Math.round((selectedItem.factors?.failureRate ?? 0) * 100))}%`, background: '#f43f5e' }} />
@@ -350,7 +455,7 @@ export default function PipelineSidebarHUD({
                 <div className="sg" style={{ margin: 0 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#94a3b8', marginBottom: '3px' }}>
                     <span>Marginal Coverage (w₄: {w.marginalCoverage})</span>
-                    <span>{(selectedItem.factors?.marginalCoverage ?? 0).toFixed(2)}</span>
+                    <span>{(selectedItem.factors?.marginalCoverage ?? 0).toFixed(3)}</span>
                   </div>
                   <div className="track" style={{ height: '5px' }}>
                     <i style={{ width: `${Math.min(100, Math.round((selectedItem.factors?.marginalCoverage ?? 0) * 100))}%`, background: '#38bdf8' }} />
@@ -358,7 +463,7 @@ export default function PipelineSidebarHUD({
                 </div>
               </div>
 
-              {/* Meta details */}
+              {/* Estimated vs Measured Timing */}
               <dl
                 style={{
                   display: 'grid',
@@ -368,9 +473,28 @@ export default function PipelineSidebarHUD({
                   margin: '10px 0',
                 }}
               >
-                <dt style={{ color: '#94a3b8' }}>Duration</dt>
+                <dt style={{ color: '#94a3b8' }}>Estimated Time</dt>
                 <dd style={{ margin: 0, fontVariantNumeric: 'tabular-nums' }}>
-                  {formatDuration(selectedItem.executionTime)}
+                  {formatDuration(selectedItem.estimated || selectedItem.executionTime)}
+                </dd>
+                <dt style={{ color: '#94a3b8' }}>Measured Wall-Clock</dt>
+                <dd
+                  style={{
+                    margin: 0,
+                    fontVariantNumeric: 'tabular-nums',
+                    color: selectedItem.measuredTime != null ? '#34d399' : '#64748b',
+                    fontWeight: selectedItem.measuredTime != null ? 600 : 400,
+                  }}
+                >
+                  {selectedItem.measuredTime != null
+                    ? formatDuration(selectedItem.measuredTime)
+                    : 'Pending / Skipped'}
+                </dd>
+                <dt style={{ color: '#94a3b8' }}>Historical Pass Rate</dt>
+                <dd style={{ margin: 0, fontVariantNumeric: 'tabular-nums' }}>
+                  {selectedItem.historicalPassRate != null
+                    ? `${selectedItem.historicalPassRate}% (${selectedItem.historicalRunsCount} runs)`
+                    : 'No prior run history'}
                 </dd>
                 <dt style={{ color: '#94a3b8' }}>Parent Module</dt>
                 <dd style={{ margin: 0 }}>{selectedItem.hubName}</dd>
@@ -395,9 +519,31 @@ export default function PipelineSidebarHUD({
                 {selectedItem.reason || 'Evaluated against regression impact and available time budget.'}
               </div>
 
+              {/* Error Output Preview */}
+              {selectedItem.output && (
+                <details style={{ fontSize: '11px', color: '#94a3b8', marginTop: '6px' }}>
+                  <summary style={{ cursor: 'pointer', color: '#38bdf8' }}>View Test Output / Log</summary>
+                  <pre
+                    style={{
+                      margin: '6px 0 0',
+                      padding: '8px',
+                      background: '#050914',
+                      borderRadius: '6px',
+                      fontSize: '10px',
+                      maxHeight: '120px',
+                      overflowY: 'auto',
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                    }}
+                  >
+                    {selectedItem.output}
+                  </pre>
+                </details>
+              )}
+
               <button
                 className="btn"
-                style={{ width: '100%', fontSize: '12px', marginTop: '6px' }}
+                style={{ width: '100%', fontSize: '12px', marginTop: '8px' }}
                 onClick={() => onFocusItem && onFocusItem(selectedItem.id)}
               >
                 Focus on Test in 3D
@@ -426,6 +572,114 @@ export default function PipelineSidebarHUD({
               {stageDescriptions[phase]}
             </p>
           </div>
+
+          {/* Validation Completeness & Safety Card */}
+          <div
+            style={{
+              background: isValidationComplete
+                ? 'rgba(16, 185, 129, 0.08)'
+                : 'rgba(245, 158, 11, 0.08)',
+              border: `1px solid ${isValidationComplete ? 'rgba(16, 185, 129, 0.25)' : 'rgba(245, 158, 11, 0.25)'}`,
+              borderRadius: '8px',
+              padding: '8px 10px',
+              fontSize: '11px',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '3px' }}>
+              <strong style={{ color: isValidationComplete ? '#34d399' : '#fbbf24' }}>
+                {isValidationComplete ? '✓ Validation Complete' : '⚠ Partial Validation'}
+              </strong>
+              <small style={{ color: '#94a3b8' }}>
+                {baselineUsable ? 'Baseline: Usable' : 'Baseline: Incomplete'}
+              </small>
+            </div>
+            <div style={{ color: '#94a3b8', lineHeight: 1.4 }}>
+              {coverageGap.length > 0
+                ? `Coverage gap: Changed code (${coverageGap.map(m => m.split('/').pop()).join(', ')}) lacks test coverage evidence.`
+                : isValidationComplete
+                  ? 'All required regression candidates are selected and scheduled.'
+                  : 'Selected tests fit budget, but does not guarantee every skipped test would pass.'}
+            </div>
+          </div>
+
+          {/* Algorithm Certainty Card */}
+          <div
+            style={{
+              background: 'rgba(255, 255, 255, 0.03)',
+              border: '1px solid #1e293b',
+              borderRadius: '8px',
+              padding: '8px 10px',
+              fontSize: '11px',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
+              <strong style={{ color: '#38bdf8' }}>Algorithm: {algorithmDetails?.name || algorithm}</strong>
+              <small style={{ color: '#64748b' }}>{workerCount} workers · {timeBudget ? `${timeBudget}m` : 'No'} budget</small>
+            </div>
+            <div style={{ color: '#94a3b8', lineHeight: 1.4 }}>
+              {algorithmDetails?.reason || 'Dynamic heuristic selection under budget constraints.'}
+            </div>
+          </div>
+
+          {/* Estimated vs Realized Times */}
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr',
+              gap: '6px',
+              fontSize: '11px',
+              background: 'rgba(255, 255, 255, 0.02)',
+              border: '1px solid #1e293b',
+              borderRadius: '8px',
+              padding: '8px 10px',
+            }}
+          >
+            <div>
+              <span style={{ color: '#64748b', display: 'block' }}>Estimated Run</span>
+              <strong style={{ fontVariantNumeric: 'tabular-nums', color: '#e2e8f0' }}>
+                {formatDuration(selectedEstimate)}
+              </strong>
+            </div>
+            <div>
+              <span style={{ color: '#64748b', display: 'block' }}>Measured Run</span>
+              <strong style={{ fontVariantNumeric: 'tabular-nums', color: measuredSelectedDuration ? '#34d399' : '#64748b' }}>
+                {measuredSelectedDuration ? formatDuration(measuredSelectedDuration) : 'Pending'}
+              </strong>
+            </div>
+            <div>
+              <span style={{ color: '#64748b', display: 'block' }}>Full Suite Est.</span>
+              <strong style={{ fontVariantNumeric: 'tabular-nums', color: '#94a3b8' }}>
+                {formatDuration(fullEstimate)}
+              </strong>
+            </div>
+            <div>
+              <span style={{ color: '#64748b', display: 'block' }}>Est. Saved</span>
+              <strong style={{ fontVariantNumeric: 'tabular-nums', color: '#38bdf8' }}>
+                {realizedSavings ? formatDuration(realizedSavings) : (savedEstimate ? `~${formatDuration(savedEstimate)}` : '—')}
+              </strong>
+            </div>
+          </div>
+
+          {/* Fallback Reasons / Assumptions Warning */}
+          {fallbackReasons.length > 0 && (
+            <div
+              style={{
+                background: 'rgba(251, 191, 36, 0.05)',
+                border: '1px solid rgba(251, 191, 36, 0.2)',
+                borderRadius: '8px',
+                padding: '8px 10px',
+                fontSize: '11px',
+                color: '#fbbf24',
+              }}
+            >
+              <strong style={{ display: 'block', marginBottom: '2px' }}>Broader Validation Triggered:</strong>
+              <ul style={{ margin: 0, paddingLeft: '16px', color: '#94a3b8', lineHeight: 1.4 }}>
+                {fallbackReasons.map((r, i) => (
+                  <li key={i}>{r}</li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           {/* Stats Grid */}
           <div
@@ -591,10 +845,16 @@ export default function PipelineSidebarHUD({
                     style={{
                       fontSize: '10px',
                       fontWeight: 600,
-                      color: n.isSelected ? '#34d399' : '#64748b',
+                      color: n.isInfraError
+                        ? '#f59e0b'
+                        : n.isFailed
+                          ? '#f43f5e'
+                          : n.isSelected
+                            ? '#34d399'
+                            : '#64748b',
                     }}
                   >
-                    {n.decision}
+                    {n.isInfraError ? 'ERROR' : n.isFailed ? 'FAILED' : n.isPass ? 'PASSED' : n.decision}
                   </span>
                 </button>
               ))}
@@ -605,4 +865,3 @@ export default function PipelineSidebarHUD({
     </aside>
   )
 }
-

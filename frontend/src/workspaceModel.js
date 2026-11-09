@@ -11,7 +11,7 @@ export const OPTIMIZATION_WEIGHTS = {
   failureRate: 0.15,
   marginalCoverage: 0.25,
 };
-export const formatDate = value => value ? new Date(value).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Just prepared';
+export const formatDate = value => value ? new Date(value).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }) : 'Just prepared';
 export const formatDuration = minutes => minutes == null || !Number.isFinite(Number(minutes)) ? '—' : Number(minutes) < 1 ? `${(Number(minutes) * 60).toFixed(1)}s` : `${Number(minutes).toFixed(1)} min`;
 export const shortPath = value => value?.split('/').at(-1) || value || '—';
 export function initialVersion(versions) {
@@ -28,10 +28,13 @@ export function buildWorkspaceModel(version, current, plans = []) {
   const tests = testPaths.map(testPath => {
     const observed = results.filter(result => result.testPath === testPath);
     const failed = observed.filter(result => result.status === 'FAILED');
+    const passed = observed.filter(result => result.status === 'PASSED');
+    const infraErrors = observed.filter(result => result.status === 'ERROR');
     const selectedTest = selected.get(testPath);
     const estimated = selectedTest?.executionTime ?? plans.flatMap(run => run.plan?.selectedTests || []).find(test => test.testId === testPath)?.executionTime ?? Math.max(0.01, observed.find(result => result.actualTime > 0)?.actualTime || 0.02);
     const decision = !plan ? 'Waiting' : selected.has(testPath) ? 'Run' : 'Skip';
     const historicalFailRate = observed.length > 0 ? Number((failed.length / observed.length).toFixed(3)) : 0;
+    const historicalPassRate = observed.length > 0 ? Math.round((passed.length / observed.length) * 100) : null;
     const factors = selectedTest?.factors || (!plan ? null : {
       relevance: selected.has(testPath) ? 1 : 0.5,
       criticality: 0.5,
@@ -47,7 +50,11 @@ export function buildWorkspaceModel(version, current, plans = []) {
           : 'Exceeds execution time budget';
     const reason = selectedTest?.reason || defaultReason;
     const result = currentResults.get(testPath);
-    const status = result?.status || (decision === 'Skip' ? 'SKIPPED' : decision === 'Run' ? 'SELECTED' : 'WAITING');
+    const isInfraError = result?.status === 'ERROR';
+    const isCodeFailure = result?.status === 'FAILED';
+    const isPass = result?.status === 'PASSED';
+    const status = isInfraError ? 'ERROR' : isCodeFailure ? 'FAILED' : isPass ? 'PASSED' : (decision === 'Skip' ? 'SKIPPED' : decision === 'Run' ? 'SELECTED' : 'WAITING');
+    const measuredTime = result?.actualTime != null ? result.actualTime : null;
 
     return {
       path: testPath,
@@ -61,9 +68,19 @@ export function buildWorkspaceModel(version, current, plans = []) {
       result,
       estimated,
       executionTime: estimated,
+      measuredTime,
+      isInfraError,
+      isCodeFailure,
+      isPass,
       observed,
       failures: failed.length,
+      passes: passed.length,
+      infraErrors: infraErrors.length,
+      historicalRunsCount: observed.length,
+      historicalPassRate,
       lastFailed: failed[0]?.completedAt || failed[0]?.recordedAt || null,
+      coverageAvailable: result?.coverageAvailable ?? null,
+      output: result?.output || result?.error || null,
     };
   });
   // Backend runAll compares the relevant candidate set, which may be smaller than
@@ -83,11 +100,40 @@ export function buildWorkspaceModel(version, current, plans = []) {
       return sum + estimate;
     }, 0);
     const estimatedSelected = run.plan?.comparisons?.selected?.estimatedMinutes || 0;
+    const measuredRunDuration = (run.results || []).reduce((sum, r) => sum + (r.actualTime || 0), 0);
     return { ...run, number: index + 1, totalTests: count, fullEstimate: estimatedFull, selectedEstimate: estimatedSelected,
-      saved: Math.max(0, estimatedFull - estimatedSelected), failedFiles: (run.results || []).filter(result => result.status === 'FAILED').length };
+      measuredRunDuration: measuredRunDuration > 0 ? measuredRunDuration : null,
+      saved: Math.max(0, estimatedFull - estimatedSelected),
+      failedFiles: (run.results || []).filter(result => result.status === 'FAILED').length,
+      infraErrorFiles: (run.results || []).filter(result => result.status === 'ERROR').length,
+    };
   });
   const changedFiles = plan?.changedFiles || [...(analysis?.changes?.added || []), ...(analysis?.changes?.modified || []), ...(analysis?.changes?.deleted || [])];
   const changedModules = plan?.changedModules || (analysis?.changes ? [...(analysis.changes.added || []), ...(analysis.changes.modified || []), ...(analysis.changes.deleted || [])].filter(name => analysis?.modules?.includes(name)) : []);
+
+  // Measured wall-clock execution time for this current run (if executed)
+  const currentExecutedResults = (current?.results || []).filter(r => r.actualTime > 0);
+  const measuredSelectedDuration = currentExecutedResults.length > 0
+    ? currentExecutedResults.reduce((sum, r) => sum + r.actualTime, 0)
+    : null;
+  const realizedSavings = measuredSelectedDuration != null && fullEstimate > measuredSelectedDuration
+    ? Math.max(0, fullEstimate - measuredSelectedDuration)
+    : null;
+
+  // Validation completeness & safety status from planner evidence
+  const coverageGap = plan?.coverageGap || [];
+  const isValidationComplete = Boolean(plan && plan.complete && coverageGap.length === 0);
+  const fallbackReasons = plan?.fallbackReasons || [];
+  const baselineUsable = !plan?.baseline && !fallbackReasons.some(r => r.toLowerCase().includes('baseline is unavailable'));
+
+  // Algorithm certainty & solver execution details
+  const algorithmDetails = {
+    name: plan?.algorithm || 'GREEDY',
+    reason: plan?.algorithmReason || (plan?.algorithm === 'KNAPSACK' ? 'Exact Dynamic Programming under budget constraint.' : 'Overlap-aware greedy heuristic selection.'),
+    formulation: plan?.formulation || (plan?.algorithm === 'KNAPSACK' ? 'FIXED_ADDITIVE' : 'OVERLAP_AWARE'),
+    search: plan?.search || null,
+    selectionRunningTimeMs: plan?.selectionRunningTimeMs || null,
+  };
 
   return {
     tests,
@@ -99,17 +145,26 @@ export function buildWorkspaceModel(version, current, plans = []) {
     fullEstimate,
     selectedEstimate,
     savedEstimate: plan ? Math.max(0, fullEstimate - selectedEstimate) : null,
+    measuredSelectedDuration,
+    realizedSavings,
     passRate,
     activeStage,
     history,
     failureFiles: new Set(results.filter(result => result.status === 'FAILED').map(result => result.testPath)).size,
+    infraErrorFiles: new Set(results.filter(result => result.status === 'ERROR').map(result => result.testPath)).size,
     averageDuration: executed.length ? executed.reduce((sum, result) => sum + result.actualTime, 0) / executed.length : null,
     changedFiles,
     changedModules,
     timeBudget: plan?.timeBudget ?? null,
     workerCount: plan?.workerCount ?? null,
     algorithm: plan?.algorithm || 'GREEDY',
+    algorithmDetails,
     weights: OPTIMIZATION_WEIGHTS,
+    coverageGap,
+    isValidationComplete,
+    fallbackReasons,
+    baselineUsable,
+    notice: plan?.notice || 'Coverage and dependency evidence guide regression selection. Passing selected tests does not guarantee every skipped test would pass.',
   };
 }
 

@@ -921,8 +921,20 @@ export default function App() {
         changedModules={model.changedModules}
         plan={model.plan}
         timeBudget={model.timeBudget}
+        workerCount={model.workerCount}
         algorithm={model.algorithm}
+        algorithmDetails={model.algorithmDetails}
         weights={model.weights}
+        coverageGap={model.coverageGap}
+        isValidationComplete={model.isValidationComplete}
+        fallbackReasons={model.fallbackReasons}
+        baselineUsable={model.baselineUsable}
+        measuredSelectedDuration={model.measuredSelectedDuration}
+        realizedSavings={model.realizedSavings}
+        fullEstimate={model.fullEstimate}
+        selectedEstimate={model.selectedEstimate}
+        savedEstimate={model.savedEstimate}
+        notice={model.notice}
         phase={phase}
         paused={paused}
       />
@@ -932,6 +944,44 @@ export default function App() {
             <Logo />
             <Navigation page={page} compact />
             <div className="city-actions">
+              {model.plan && (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    marginRight: '6px',
+                    fontSize: '11px',
+                  }}
+                >
+                  <span
+                    className="chip"
+                    style={{
+                      padding: '3px 8px',
+                      fontSize: '11px',
+                      color: model.isValidationComplete ? '#34d399' : '#fbbf24',
+                      borderColor: model.isValidationComplete ? '#34d39955' : '#fbbf2455',
+                      background: model.isValidationComplete ? '#34d39910' : '#fbbf2410',
+                    }}
+                    title={
+                      model.coverageGap?.length > 0
+                        ? `Coverage gaps in: ${model.coverageGap.join(', ')}`
+                        : model.isValidationComplete
+                          ? '100% required regression evidence covered'
+                          : 'Selected tests fit budget'
+                    }
+                  >
+                    {model.isValidationComplete ? '✓ Validation Complete' : '⚠ Partial Validation'}
+                  </span>
+                  <span
+                    className="chip"
+                    style={{ padding: '3px 8px', fontSize: '11px', color: '#94a3b8' }}
+                    title={model.algorithmDetails?.reason}
+                  >
+                    {model.algorithmDetails?.name || model.algorithm}
+                  </span>
+                </div>
+              )}
               <div
                 className="seg"
                 role="group"
