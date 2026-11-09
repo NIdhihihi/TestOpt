@@ -1,4 +1,8 @@
 import { useMemo, useState, useRef, useCallback } from 'react'
+import { computePipelineLayout3D } from './layout3d.js'
+import PipelineScene3D from './PipelineScene3D.jsx'
+import PipelineSidebarHUD from './PipelineSidebarHUD.jsx'
+import PipelineTableView from './PipelineTableView.jsx'
 
 function shortName(filePath = '') {
   const parts = filePath.split('/')
@@ -11,9 +15,15 @@ function baseName(filePath = '') {
 
 export default function VisualScene({
   city = false,
+  viewMode = '3d',
   analysis,
   tests = [],
   changedFiles = [],
+  changedModules = [],
+  plan = null,
+  timeBudget = null,
+  algorithm = 'GREEDY',
+  weights = null,
   phase = 0,
   paused = false,
 }) {
@@ -22,14 +32,129 @@ export default function VisualScene({
     return <div className="scene backdrop" aria-hidden="true" />
   }
 
+  if (viewMode === 'table') {
+    return (
+      <PipelineTableView
+        tests={tests}
+        changedFiles={changedFiles}
+        changedModules={changedModules}
+        timeBudget={timeBudget}
+        algorithm={algorithm}
+        weights={weights}
+      />
+    )
+  }
+
+  if (viewMode === '2d') {
+    return (
+      <DependencyGraphCanvas
+        analysis={analysis}
+        tests={tests}
+        changedFiles={changedFiles}
+        changedModules={changedModules}
+        plan={plan}
+        timeBudget={timeBudget}
+        algorithm={algorithm}
+        weights={weights}
+        phase={phase}
+        paused={paused}
+      />
+    )
+  }
+
   return (
-    <DependencyGraphCanvas
+    <PipelineScene3DContainer
       analysis={analysis}
       tests={tests}
       changedFiles={changedFiles}
+      changedModules={changedModules}
+      plan={plan}
+      timeBudget={timeBudget}
+      algorithm={algorithm}
+      weights={weights}
       phase={phase}
       paused={paused}
     />
+  )
+}
+
+function PipelineScene3DContainer({
+  analysis,
+  tests = [],
+  changedFiles = [],
+  changedModules = [],
+  plan = null,
+  timeBudget = null,
+  algorithm = 'GREEDY',
+  weights = null,
+  phase = 0,
+  paused = false,
+}) {
+  const [selectedItem, setSelectedItem] = useState(null)
+  const [activeFocus, setActiveFocus] = useState(null)
+
+  const layout = useMemo(
+    () =>
+      computePipelineLayout3D({
+        analysis,
+        tests,
+        changedFiles,
+        changedModules,
+      }),
+    [analysis, tests, changedFiles, changedModules]
+  )
+
+  const handleSelectNode = useCallback((item) => {
+    setSelectedItem(item)
+    if (item?.id) {
+      setActiveFocus(item.id)
+    }
+  }, [])
+
+  const handleFocusItem = useCallback((id) => {
+    setActiveFocus(id)
+  }, [])
+
+  return (
+    <div
+      className="pipeline-3d-root"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 0,
+        display: 'grid',
+        gridTemplateColumns: '330px minmax(0, 1fr)',
+        gap: '16px',
+        padding: '100px 20px 20px',
+        background: '#070b16',
+        boxSizing: 'border-box',
+      }}
+    >
+      <PipelineSidebarHUD
+        layout={layout}
+        phase={phase}
+        selectedItem={selectedItem}
+        onSelectItem={handleSelectNode}
+        onFocusItem={handleFocusItem}
+        timeBudget={timeBudget}
+        algorithm={algorithm}
+        weights={weights}
+      />
+      <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: 0 }}>
+        <PipelineScene3D
+          layout={layout}
+          phase={phase}
+          paused={paused}
+          selectedId={selectedItem?.id || null}
+          activeFocus={activeFocus}
+          onSelectNode={handleSelectNode}
+          onResetView={() => {
+            setActiveFocus(null)
+            setSelectedItem(null)
+          }}
+        />
+      </div>
+    </div>
   )
 }
 
@@ -37,6 +162,11 @@ function DependencyGraphCanvas({
   analysis,
   tests = [],
   changedFiles = [],
+  changedModules = [],
+  plan = null,
+  timeBudget = null,
+  algorithm = 'GREEDY',
+  weights = null,
   phase = 0,
 }) {
   const svgRef = useRef(null)

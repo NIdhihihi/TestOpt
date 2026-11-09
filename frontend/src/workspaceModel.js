@@ -5,6 +5,12 @@ export const STAGES = [
   { name: 'Execution', color: '#34d399' }, { name: 'Report', color: '#e879f9' },
 ];
 export const TERMINAL = new Set(['COMPLETED', 'FAILED', 'ERROR', 'INCOMPLETE', 'REJECTED']);
+export const OPTIMIZATION_WEIGHTS = {
+  relevance: 0.35,
+  criticality: 0.25,
+  failureRate: 0.15,
+  marginalCoverage: 0.25,
+};
 export const formatDate = value => value ? new Date(value).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Just prepared';
 export const formatDuration = minutes => minutes == null || !Number.isFinite(Number(minutes)) ? '—' : Number(minutes) < 1 ? `${(Number(minutes) * 60).toFixed(1)}s` : `${Number(minutes).toFixed(1)} min`;
 export const shortPath = value => value?.split('/').at(-1) || value || '—';
@@ -24,10 +30,41 @@ export function buildWorkspaceModel(version, current, plans = []) {
     const failed = observed.filter(result => result.status === 'FAILED');
     const selectedTest = selected.get(testPath);
     const estimated = selectedTest?.executionTime ?? plans.flatMap(run => run.plan?.selectedTests || []).find(test => test.testId === testPath)?.executionTime ?? Math.max(0.01, observed.find(result => result.actualTime > 0)?.actualTime || 0.02);
-    return { path: testPath, module: analysis?.coverage?.[testPath]?.[0] || 'No source mapping', modules: analysis?.coverage?.[testPath] || [],
-      score: selectedTest?.score ?? null, factors: selectedTest?.factors, reason: selectedTest?.reason,
-      decision: !plan ? 'Waiting' : selected.has(testPath) ? 'Run' : 'Skip', result: currentResults.get(testPath), estimated,
-      observed, failures: failed.length, lastFailed: failed[0]?.completedAt || failed[0]?.recordedAt || null };
+    const decision = !plan ? 'Waiting' : selected.has(testPath) ? 'Run' : 'Skip';
+    const historicalFailRate = observed.length > 0 ? Number((failed.length / observed.length).toFixed(3)) : 0;
+    const factors = selectedTest?.factors || (!plan ? null : {
+      relevance: selected.has(testPath) ? 1 : 0.5,
+      criticality: 0.5,
+      failureRate: historicalFailRate,
+      marginalCoverage: 0,
+    });
+    const defaultReason = !plan
+      ? null
+      : plan.noChanges
+        ? 'No code changes require this test'
+        : plan.requiredTests && !plan.requiredTests.includes(testPath)
+          ? 'Not linked to changed code'
+          : 'Exceeds execution time budget';
+    const reason = selectedTest?.reason || defaultReason;
+    const result = currentResults.get(testPath);
+    const status = result?.status || (decision === 'Skip' ? 'SKIPPED' : decision === 'Run' ? 'SELECTED' : 'WAITING');
+
+    return {
+      path: testPath,
+      module: analysis?.coverage?.[testPath]?.[0] || 'No source mapping',
+      modules: analysis?.coverage?.[testPath] || [],
+      score: selectedTest?.score ?? null,
+      factors,
+      reason,
+      decision,
+      status,
+      result,
+      estimated,
+      executionTime: estimated,
+      observed,
+      failures: failed.length,
+      lastFailed: failed[0]?.completedAt || failed[0]?.recordedAt || null,
+    };
   });
   // Backend runAll compares the relevant candidate set, which may be smaller than
   // the uploaded suite. Only reuse that estimate when it includes every file.
@@ -49,12 +86,31 @@ export function buildWorkspaceModel(version, current, plans = []) {
     return { ...run, number: index + 1, totalTests: count, fullEstimate: estimatedFull, selectedEstimate: estimatedSelected,
       saved: Math.max(0, estimatedFull - estimatedSelected), failedFiles: (run.results || []).filter(result => result.status === 'FAILED').length };
   });
-  return { tests, analysis, plan, total: tests.length, selected: plan?.selectedTests?.length ?? null,
+  const changedFiles = plan?.changedFiles || [...(analysis?.changes?.added || []), ...(analysis?.changes?.modified || []), ...(analysis?.changes?.deleted || [])];
+  const changedModules = plan?.changedModules || (analysis?.changes ? [...(analysis.changes.added || []), ...(analysis.changes.modified || []), ...(analysis.changes.deleted || [])].filter(name => analysis?.modules?.includes(name)) : []);
+
+  return {
+    tests,
+    analysis,
+    plan,
+    total: tests.length,
+    selected: plan?.selectedTests?.length ?? null,
     skippedPercent: plan && tests.length ? Math.round((tests.length - plan.selectedTests.length) / tests.length * 100) : null,
-    fullEstimate, selectedEstimate, savedEstimate: plan ? Math.max(0, fullEstimate - selectedEstimate) : null,
-    passRate, activeStage, history, failureFiles: new Set(results.filter(result => result.status === 'FAILED').map(result => result.testPath)).size,
+    fullEstimate,
+    selectedEstimate,
+    savedEstimate: plan ? Math.max(0, fullEstimate - selectedEstimate) : null,
+    passRate,
+    activeStage,
+    history,
+    failureFiles: new Set(results.filter(result => result.status === 'FAILED').map(result => result.testPath)).size,
     averageDuration: executed.length ? executed.reduce((sum, result) => sum + result.actualTime, 0) / executed.length : null,
-    changedFiles: plan?.changedFiles || [...(analysis?.changes?.added || []), ...(analysis?.changes?.modified || []), ...(analysis?.changes?.deleted || [])] };
+    changedFiles,
+    changedModules,
+    timeBudget: plan?.timeBudget ?? null,
+    workerCount: plan?.workerCount ?? null,
+    algorithm: plan?.algorithm || 'GREEDY',
+    weights: OPTIMIZATION_WEIGHTS,
+  };
 }
 
 export async function readProjectUpload(fileList) {

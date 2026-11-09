@@ -394,6 +394,15 @@ export default function App() {
   const [showLegacy, setShowLegacy] = useState(false),
     [visualPhase, setVisualPhase] = useState(null),
     [paused, setPaused] = useState(false)
+  const [pipelineViewMode, setPipelineViewMode] = useState(
+    () => localStorage.getItem('testopt_pipeline_view') || '3d'
+  )
+  const choosePipelineViewMode = (mode) => {
+    setPipelineViewMode(mode)
+    try {
+      localStorage.setItem('testopt_pipeline_view', mode)
+    } catch {}
+  }
   const token = session?.accessToken
   const request = useCallback(
     async (path, method = 'GET', body) => {
@@ -905,9 +914,15 @@ export default function App() {
     <>
       <VisualScene
         city={page === 'pipeline'}
+        viewMode={pipelineViewMode}
         analysis={model.analysis}
         tests={model.tests}
         changedFiles={model.changedFiles}
+        changedModules={model.changedModules}
+        plan={model.plan}
+        timeBudget={model.timeBudget}
+        algorithm={model.algorithm}
+        weights={model.weights}
         phase={phase}
         paused={paused}
       />
@@ -917,6 +932,40 @@ export default function App() {
             <Logo />
             <Navigation page={page} compact />
             <div className="city-actions">
+              <div
+                className="seg"
+                role="group"
+                aria-label="Pipeline view mode"
+                style={{ margin: 0, padding: '2px' }}
+              >
+                <button
+                  type="button"
+                  className={pipelineViewMode === '3d' ? 'on' : ''}
+                  onClick={() => choosePipelineViewMode('3d')}
+                  title="3D Architecture View"
+                  style={{ padding: '5px 10px', fontSize: '11px' }}
+                >
+                  🧊 3D
+                </button>
+                <button
+                  type="button"
+                  className={pipelineViewMode === '2d' ? 'on' : ''}
+                  onClick={() => choosePipelineViewMode('2d')}
+                  title="2D Flow Graph"
+                  style={{ padding: '5px 10px', fontSize: '11px' }}
+                >
+                  🔀 2D Flow
+                </button>
+                <button
+                  type="button"
+                  className={pipelineViewMode === 'table' ? 'on' : ''}
+                  onClick={() => choosePipelineViewMode('table')}
+                  title="Accessible Table View"
+                  style={{ padding: '5px 10px', fontSize: '11px' }}
+                >
+                  📋 Table
+                </button>
+              </div>
               <button className="btn" onClick={() => setPaused(!paused)}>
                 {paused ? 'Resume' : 'Pause'}
               </button>
@@ -953,57 +1002,61 @@ export default function App() {
               </button>
             ))}
           </div>
-          <div className="city-stats">
-            {[
-              [model.total, 'Total tests'],
-              [model.selected ?? '—', 'Selected'],
-              [
-                model.skippedPercent == null ? '—' : `${model.skippedPercent}%`,
-                'Skipped',
-              ],
-              [
-                model.savedEstimate == null
-                  ? '—'
-                  : formatDuration(model.savedEstimate),
-                'Est. saved',
-              ],
-            ].map(([value, label]) => (
-              <div className="card" key={label}>
-                <b>{value}</b>
-                <span>{label}</span>
+          {pipelineViewMode === '2d' && (
+            <>
+              <div className="city-stats">
+                {[
+                  [model.total, 'Total tests'],
+                  [model.selected ?? '—', 'Selected'],
+                  [
+                    model.skippedPercent == null ? '—' : `${model.skippedPercent}%`,
+                    'Skipped',
+                  ],
+                  [
+                    model.savedEstimate == null
+                      ? '—'
+                      : formatDuration(model.savedEstimate),
+                    'Est. saved',
+                  ],
+                ].map(([value, label]) => (
+                  <div className="card" key={label}>
+                    <b>{value}</b>
+                    <span>{label}</span>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-          <section className="card city-caption">
-            <span className="eyebrow" style={{ color: STAGES[phase].color }}>
-              {STAGES[phase].name}
-            </span>
-            <h1>{captions[phase][0]}</h1>
-            <p>{captions[phase][1]}</p>
-            <p className="fine-print">
-              {visualPhase == null
-                ? 'Current workflow state'
-                : 'Visualization replay · no jobs are launched'}{' '}
-              · {project?.projectName || 'No project selected'}
-            </p>
-            <a className="inline-link" href="#dashboard">
-              ← Back to dashboard
-            </a>
-          </section>
-          <aside className="card city-legend">
-            <strong>Pipeline Stages</strong>
-            {STAGES.map((stage) => (
-              <span key={stage.name}>
-                <i style={{ background: stage.color }} />
-                {stage.name}
-              </span>
-            ))}
-            <small>
-              Directed AST dependency DAG
-              <br />
-              with cycle detection & BFS impact.
-            </small>
-          </aside>
+              <section className="card city-caption">
+                <span className="eyebrow" style={{ color: STAGES[phase].color }}>
+                  {STAGES[phase].name}
+                </span>
+                <h1>{captions[phase][0]}</h1>
+                <p>{captions[phase][1]}</p>
+                <p className="fine-print">
+                  {visualPhase == null
+                    ? 'Current workflow state'
+                    : 'Visualization replay · no jobs are launched'}{' '}
+                  · {project?.projectName || 'No project selected'}
+                </p>
+                <a className="inline-link" href="#dashboard">
+                  ← Back to dashboard
+                </a>
+              </section>
+              <aside className="card city-legend">
+                <strong>Pipeline Stages</strong>
+                {STAGES.map((stage) => (
+                  <span key={stage.name}>
+                    <i style={{ background: stage.color }} />
+                    {stage.name}
+                  </span>
+                ))}
+                <small>
+                  Directed AST dependency DAG
+                  <br />
+                  with cycle detection & BFS impact.
+                </small>
+              </aside>
+            </>
+          )}
         </div>
       ) : (
         <div className={`app ${page === 'dashboard' ? 'dashboard-app' : ''}`}>
