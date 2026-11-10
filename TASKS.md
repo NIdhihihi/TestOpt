@@ -38,4 +38,4 @@ First adapter: dependency-free JavaScript projects with Node's built-in test run
 - Original PDFs remain unchanged. The addendum describes the user-approved changes.
 - Working changes remain uncommitted because Git staging permission was previously declined.
 
-Final verification: 40 backend unit tests and 13 isolated API tests pass; backend syntax checks, frontend build/lint, live Redis/Docker baseline/change/failure/timeout/archive checks, and browser upload/reject/approve/change-subset checks pass. Local schema was upgraded without deleting existing data. Production deployment and additional adapters remain in the subsequent milestones.
+Final verification: backend syntax check (`npm run check`), backend unit suite (`npm test`), isolated schema/migration & API integration suite (`npm run test:integration:isolated` against MySQL 8.4), frontend tests/build/lint, live Redis/Docker baseline/change/failure/timeout/archive checks, and browser upload/reject/approve/change-subset checks pass. Production deployment and additional adapters remain in the subsequent milestones.

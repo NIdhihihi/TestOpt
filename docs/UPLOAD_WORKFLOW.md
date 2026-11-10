@@ -8,7 +8,7 @@ Projects needing npm dependencies, TypeScript/JSX compilation, Jest, browser fra
 
 ## Setup
 
-1. Existing installations require migrations 007/008 from the earlier work, and organization/audit/runner/job tables. After backing up normally, run `npm run db:upgrade` from backend to add archive/source tables only when missing. It retains existing data. New installations run schema.sql, seed.sql, migrations 003-006, and `npm run db:upgrade` (the base schema already incorporates older structural changes).
+1. Fresh installations and upgrades both use the unified migration runner in `backend/src/db/migrator.js` (tracked via `schema_migrations`). Run `npm run db:setup` in `backend/` for a fresh local MySQL setup (applies schema/migrations first, then seeds sample data), `npm run db:upgrade` to migrate an existing database without losing data, or `docker compose up -d` to start MySQL 8.4, Redis 7.4, and the one-shot `migrate` service together.
 2. Start MySQL, Redis, the API, and `npm run worker`. Both API and worker must use the same DB and Redis configuration.
 3. Pull the official execution image once: `docker pull node:24-alpine`. Execution uses `--pull=never`; it never downloads an image or npm packages on a user's approval request.
 4. Start the frontend. The default API is localhost:5000/api; override VITE_API_URL for a separate test environment.

@@ -1,0 +1,7 @@
+FROM node:24-alpine
+WORKDIR /app/backend
+COPY backend/package.json backend/package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund
+WORKDIR /app
+CMD ["node", "backend/src/db/migrator.js", "--create-db", "--seed-if-empty"]
+

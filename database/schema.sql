@@ -1,5 +1,8 @@
-CREATE DATABASE IF NOT EXISTS testopt;
-USE testopt;
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    filename VARCHAR(255) PRIMARY KEY,
+    checksum CHAR(64) NOT NULL,
+    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
 CREATE TABLE IF NOT EXISTS users (
     user_id VARCHAR(50) PRIMARY KEY,
@@ -24,12 +27,31 @@ CREATE TABLE IF NOT EXISTS email_verification_codes (
     INDEX idx_email_verification (email, expires_at)
 );
 
+CREATE TABLE IF NOT EXISTS organizations (
+    organization_id VARCHAR(50) PRIMARY KEY,
+    organization_name VARCHAR(150) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS organization_members (
+    organization_id VARCHAR(50) NOT NULL,
+    user_id VARCHAR(50) NOT NULL,
+    role ENUM('OWNER', 'ADMIN', 'TEST_MANAGER', 'DEVELOPER', 'VIEWER') NOT NULL DEFAULT 'DEVELOPER',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (organization_id, user_id),
+    FOREIGN KEY (organization_id) REFERENCES organizations(organization_id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS projects (
     project_id VARCHAR(50) PRIMARY KEY,
+    organization_id VARCHAR(50) NOT NULL,
     project_name VARCHAR(150) NOT NULL,
     archived_at DATETIME NULL,
     description TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_projects_organization
+        FOREIGN KEY (organization_id) REFERENCES organizations(organization_id)
 );
 
 CREATE TABLE IF NOT EXISTS modules (
@@ -96,7 +118,6 @@ CREATE TABLE IF NOT EXISTS testing_constraints (
     FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
 );
 
-
 CREATE TABLE IF NOT EXISTS code_change_modules (
     change_id VARCHAR(50) NOT NULL,
     module_id VARCHAR(50) NOT NULL,
@@ -108,7 +129,6 @@ CREATE TABLE IF NOT EXISTS code_change_modules (
         REFERENCES modules(module_id)
         ON DELETE CASCADE
 );
-
 
 CREATE TABLE IF NOT EXISTS optimization_runs (
     run_id VARCHAR(50) PRIMARY KEY,
@@ -155,6 +175,21 @@ CREATE TABLE IF NOT EXISTS test_executions (
     FOREIGN KEY (worker_id) REFERENCES workers(worker_id)
 );
 
+CREATE TABLE IF NOT EXISTS execution_jobs (
+    job_id VARCHAR(50) PRIMARY KEY,
+    run_id VARCHAR(50) NOT NULL,
+    requested_by_user_id VARCHAR(50) NOT NULL,
+    queue_status ENUM('QUEUED', 'PROCESSING', 'SUCCEEDED', 'FAILED') NOT NULL DEFAULT 'QUEUED',
+    attempt_count INT NOT NULL DEFAULT 0,
+    error_message TEXT NULL,
+    queued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    started_at DATETIME NULL,
+    completed_at DATETIME NULL,
+    FOREIGN KEY (run_id) REFERENCES optimization_runs(run_id),
+    FOREIGN KEY (requested_by_user_id) REFERENCES users(user_id),
+    INDEX idx_execution_jobs_status (queue_status, queued_at)
+);
+
 CREATE TABLE IF NOT EXISTS test_history (
     test_id VARCHAR(50) PRIMARY KEY,
     total_executions INT NOT NULL DEFAULT 0,
@@ -163,4 +198,68 @@ CREATE TABLE IF NOT EXISTS test_history (
     FOREIGN KEY (test_id) REFERENCES test_cases(test_id),
     CHECK (total_executions >= 0),
     CHECK (failure_count >= 0 AND failure_count <= total_executions)
+);
+
+CREATE TABLE IF NOT EXISTS audit_events (
+    event_id VARCHAR(50) PRIMARY KEY,
+    organization_id VARCHAR(50) NOT NULL,
+    user_id VARCHAR(50) NOT NULL,
+    event_type VARCHAR(80) NOT NULL,
+    resource_type VARCHAR(50) NOT NULL,
+    resource_id VARCHAR(50) NOT NULL,
+    details JSON NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_audit_organization_created (organization_id, created_at),
+    INDEX idx_audit_resource (resource_type, resource_id),
+    FOREIGN KEY (organization_id) REFERENCES organizations(organization_id),
+    FOREIGN KEY (user_id) REFERENCES users(user_id)
+);
+
+CREATE TABLE IF NOT EXISTS project_runner_configs (
+    project_id VARCHAR(50) PRIMARY KEY,
+    runner_type ENUM('NPM') NOT NULL DEFAULT 'NPM',
+    workspace_path VARCHAR(255) NOT NULL,
+    command_name VARCHAR(80) NOT NULL DEFAULT 'npm',
+    command_args JSON NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS source_versions (
+    version_id VARCHAR(50) PRIMARY KEY,
+    project_id VARCHAR(50) NOT NULL,
+    previous_version_id VARCHAR(50) NULL,
+    files JSON NOT NULL,
+    analysis JSON NOT NULL,
+    evidence JSON NULL,
+    created_at TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP(3),
+    FOREIGN KEY (project_id) REFERENCES projects(project_id),
+    INDEX idx_source_project (project_id, created_at)
+);
+
+CREATE TABLE IF NOT EXISTS source_plans (
+    plan_id VARCHAR(50) PRIMARY KEY,
+    version_id VARCHAR(50) NOT NULL,
+    project_id VARCHAR(50) NOT NULL,
+    plan JSON NOT NULL,
+    status VARCHAR(30) NOT NULL DEFAULT 'PLANNED',
+    results JSON NOT NULL,
+    error_message TEXT NULL,
+    created_at TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP(3),
+    completed_at DATETIME NULL,
+    FOREIGN KEY (project_id) REFERENCES projects(project_id),
+    FOREIGN KEY (version_id) REFERENCES source_versions(version_id),
+    INDEX idx_source_plan_project (project_id, created_at)
+);
+
+CREATE TABLE IF NOT EXISTS source_test_history (
+    project_id VARCHAR(50) NOT NULL,
+    test_path VARCHAR(240) NOT NULL,
+    total_executions INT NOT NULL DEFAULT 0,
+    failure_count INT NOT NULL DEFAULT 0,
+    estimated_time DECIMAL(10,5) NOT NULL DEFAULT 0.02,
+    last_execution DATETIME NULL,
+    PRIMARY KEY (project_id, test_path),
+    FOREIGN KEY (project_id) REFERENCES projects(project_id)
 );

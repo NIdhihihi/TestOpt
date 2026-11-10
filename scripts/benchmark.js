@@ -517,10 +517,13 @@ export function runExperiment4_Scheduling({ testCount = 50, workerCounts = [2, 4
       };
     }
 
-    const lowerBound = strategyResults["LPT"] ? Math.max(
-      selectedTests.reduce((s, t) => s + t.executionTime, 0) / m,
-      Math.max(...selectedTests.map((t) => t.executionTime))
-    ) : 0;
+    const rawLowerBound = strategyResults["LPT"]
+      ? Math.max(
+          selectedTests.reduce((s, t) => s + t.executionTime, 0) / m,
+          Math.max(...selectedTests.map((t) => t.executionTime)),
+        )
+      : 0;
+    const lowerBound = Number(rawLowerBound.toFixed(5));
 
     results.push({
       workers: m,
@@ -652,7 +655,7 @@ ${table(["Budget", "Latent defects", "Caught with history", "Caught without hist
 // 6. MAIN EXECUTION ROUTINE
 // ============================================================================
 
-export async function runBenchmarks({ isFull = false, isJson = false } = {}) {
+export async function runBenchmarks({ isFull = false, isJson = false, writeReport = false } = {}) {
   const runtimeSizes = isFull ? [100, 500, 1000, 2500, 5000, 10000] : [100, 500, 1000, 2500, 5000];
 
   console.log("===============================================================================");
@@ -749,15 +752,15 @@ export async function runBenchmarks({ isFull = false, isJson = false } = {}) {
   }
   console.log("└──────────────┴──────────────────┴──────────────────┴──────────────────┴─────────────────────┘\n");
 
-  // Write Markdown Report to docs/BENCHMARK_REPORT.md
-  if (!fs.existsSync(DOCS_DIR)) {
-    fs.mkdirSync(DOCS_DIR, { recursive: true });
-  }
-  const reportPath = path.join(DOCS_DIR, "BENCHMARK_REPORT.md");
   const markdown = generateMarkdownReport(results);
+  const reportPath = writeReport
+    ? path.join(DOCS_DIR, "BENCHMARK_REPORT.md")
+    : path.join(ROOT_DIR, ".benchmark-report.md");
+
+  fs.mkdirSync(path.dirname(reportPath), { recursive: true });
   fs.writeFileSync(reportPath, markdown, "utf-8");
 
-  console.log(`📄 Comprehensive Markdown Report saved to: ${reportPath}`);
+  console.log(`📄 Markdown Report saved to: ${reportPath}${writeReport ? "" : " (pass --write-report to update docs/BENCHMARK_REPORT.md)"}`);
   console.log("✅ Academic Evaluation & Benchmark Suite complete!\n");
 
   return results;
@@ -767,7 +770,8 @@ export async function runBenchmarks({ isFull = false, isJson = false } = {}) {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const isFull = process.argv.includes("--full");
   const isJson = process.argv.includes("--json");
-  runBenchmarks({ isFull, isJson }).catch((err) => {
+  const writeReport = process.argv.includes("--write-report");
+  runBenchmarks({ isFull, isJson, writeReport }).catch((err) => {
     console.error("Benchmark execution failed:", err);
     process.exit(1);
   });

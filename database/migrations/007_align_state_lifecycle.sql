@@ -1,5 +1,3 @@
-USE testopt;
-
 -- Align selected_tests with the fine-grained Test State lifecycle (SRS REQ-4.9.6):
 -- SELECTED -> ASSIGNED -> RUNNING -> PASSED / FAILED / ERROR -> RECORDED
 ALTER TABLE selected_tests

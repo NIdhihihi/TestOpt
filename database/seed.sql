@@ -1,8 +1,9 @@
-USE testopt;
+INSERT IGNORE INTO organizations (organization_id, organization_name) VALUES
+('ORG_DEFAULT', 'Default organization');
 
-INSERT IGNORE INTO projects (project_id, project_name, description) VALUES
-('P_TESTOPT', 'TestOpt Demo Project', 'Shared sample project for development'),
-('P_RETAIL', 'Retail checkout platform', 'Production-like retail workflow data for evaluating impact analysis and regression-test selection.');
+INSERT IGNORE INTO projects (project_id, organization_id, project_name, description) VALUES
+('P_TESTOPT', 'ORG_DEFAULT', 'TestOpt Demo Project', 'Shared sample project for development'),
+('P_RETAIL', 'ORG_DEFAULT', 'Retail checkout platform', 'Production-like retail workflow data for evaluating impact analysis and regression-test selection.');
 
 INSERT IGNORE INTO modules (module_id, project_id, module_name, criticality) VALUES
 ('M_AUTH', 'P_TESTOPT', 'Authentication', 8), ('M_CATALOG', 'P_TESTOPT', 'Product Catalog', 5), ('M_PAYMENT', 'P_TESTOPT', 'Payment', 10), ('M_ORDER', 'P_TESTOPT', 'Order Management', 9),
@@ -25,3 +26,9 @@ INSERT IGNORE INTO test_history (test_id, total_executions, failure_count, last_
 ('RT_LOGIN', 48, 2, '2026-10-20 09:15:00'), ('RT_CART', 44, 3, '2026-10-20 09:20:00'), ('RT_PROMO', 36, 5, '2026-10-19 16:40:00'), ('RT_STOCK', 31, 6, '2026-10-20 10:05:00'), ('RT_PAY', 42, 7, '2026-10-20 10:30:00'), ('RT_CHECKOUT', 40, 4, '2026-10-20 11:10:00'), ('RT_FULFILL', 38, 1, '2026-10-20 11:35:00'), ('RT_SEARCH', 52, 2, '2026-10-20 08:45:00');
 
 INSERT IGNORE INTO workers (worker_id, worker_status) VALUES ('W1', 'AVAILABLE'), ('W2', 'AVAILABLE');
+
+INSERT IGNORE INTO testing_constraints (project_id, w1, w2, w3, w4, default_budget, max_workers) VALUES
+('P_TESTOPT', 0.350, 0.250, 0.150, 0.250, 15.00, 2);
+
+INSERT IGNORE INTO project_runner_configs (project_id, runner_type, workspace_path, command_name, command_args) VALUES
+('P_TESTOPT', 'NPM', 'backend', 'npm', JSON_ARRAY('test'));

@@ -42,6 +42,14 @@ test("findAffectedModuleIds traverses reversed graph and handles cycles", () => 
   ];
   const cyclicAffected = findAffectedModuleIds(["M1"], cyclicDeps);
   assert.deepEqual(cyclicAffected.sort(), ["M1", "M2", "M3"]);
+
+  // Handles deep linear graphs without O(V^2) shift() overhead
+  const chainDeps = Array.from({ length: 5000 }, (_, i) => ({
+    source_module_id: `N_${i + 1}`,
+    target_module_id: `N_${i}`,
+  }));
+  const chainAffected = findAffectedModuleIds(["N_0"], chainDeps);
+  assert.equal(chainAffected.length, 5001);
 });
 
 test("computeModuleImportance applies indirect damping factor alpha", () => {

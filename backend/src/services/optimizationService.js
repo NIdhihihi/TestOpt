@@ -93,9 +93,10 @@ export function findAffectedModuleIds(changedModuleIds, dependencies) {
 
   const affected = new Set(changedModuleIds);
   const pending = [...changedModuleIds];
+  let head = 0;
 
-  while (pending.length > 0) {
-    const moduleId = pending.shift();
+  while (head < pending.length) {
+    const moduleId = pending[head++];
 
     for (const dependentId of dependentsByModule.get(moduleId) ?? []) {
       if (!affected.has(dependentId)) {

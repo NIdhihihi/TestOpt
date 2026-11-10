@@ -2,14 +2,35 @@ services:
   mysql:
     image: mysql:8.4
     environment:
-      MYSQL_DATABASE: testopt
-      MYSQL_ROOT_PASSWORD: change-this-for-local-development
+      MYSQL_DATABASE: ${DB_NAME:-testopt}
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-change-this-for-local-development}
     ports:
       - "3306:3306"
     volumes:
       - mysql-data:/var/lib/mysql
-      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
-      - ./database/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+  migrate:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.migrate
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: ${DB_PASSWORD:-change-this-for-local-development}
+      DB_NAME: ${DB_NAME:-testopt}
+    volumes:
+      - ./backend/src/db:/app/backend/src/db:ro
+      - ./database:/app/database:ro
+    restart: "no"
   redis:
     image: redis:7.4-alpine
     ports:

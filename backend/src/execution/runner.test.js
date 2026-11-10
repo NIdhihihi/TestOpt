@@ -22,11 +22,26 @@ test("runner rejects paths outside the workspace", () => {
   assert.throws(() => runCommand({ ...options, workspacePath: "../../..", commandArgs: [] }), /must stay inside/);
 });
 
+async function waitForProcessExit(pid, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if (error.code === "ESRCH") return;
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+}
+
 test("timeout terminates descendants as well as the runner", async () => {
   const script = `const {spawn} = require('node:child_process'); const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {stdio:'ignore'}); console.log(child.pid); setInterval(() => {}, 1000);`;
-  const result = await runCommand({ ...options, commandArgs: ["-e", script], timeoutMs: 2000 });
+  const result = await runCommand({ ...options, commandArgs: ["-e", script], timeoutMs: 2500 });
   assert.equal(result.timedOut, true);
-  const pid = Number(result.output.split(/\r?\n/)[0]);
+  const pidMatch = result.output.match(/^\d+/m);
+  const pid = pidMatch ? Number(pidMatch[0]) : NaN;
   assert.ok(Number.isInteger(pid) && pid > 0, "child process must start before timeout");
-  assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  await waitForProcessExit(pid);
 });

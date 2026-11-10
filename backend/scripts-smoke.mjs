@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import mysql from 'mysql2/promise';
 import dotenv from 'dotenv';
 import { example } from './src/integration/fixtures/demoProject.js';
+import { migrateDatabase, seedDatabase } from './src/db/migrator.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 dotenv.config({ path: path.join(root, '.env') });
@@ -19,15 +20,13 @@ process.env.JWT_SECRET = 'disposable-smoke-test-secret-not-for-production';
 process.env.CORS_ORIGINS = 'http://localhost:5174,http://127.0.0.1:5174';
 process.env.TEST_WORKSPACE_ROOT = root;
 process.env.TEST_RUNNER_TIMEOUT_MS = '10000';
-const db = await mysql.createConnection({ host: process.env.DB_HOST, port: Number(process.env.DB_PORT || 3306), user: process.env.DB_USER, password: process.env.DB_PASSWORD, multipleStatements: true });
+const db = await mysql.createConnection({ host: process.env.DB_HOST, port: Number(process.env.DB_PORT || 3306), user: process.env.DB_USER, password: process.env.DB_PASSWORD });
 let server, worker, queue, pool;
 try {
   await db.query(`CREATE DATABASE \`${database}\``);
   await db.changeUser({ database });
-  for (const file of ['schema.sql', 'seed.sql', 'migrations/003_add_organizations.sql', 'migrations/004_add_audit_events.sql', 'migrations/005_add_execution_jobs.sql', 'migrations/006_add_runner_configs.sql', 'migrations/010_source_workflow.sql']) {
-    const sql = (await fs.readFile(path.join(root, 'database', file), 'utf8')).replace(/CREATE DATABASE IF NOT EXISTS testopt;/g, '').replace(/USE testopt;/g, '');
-    await db.query(sql);
-  }
+  await migrateDatabase(db);
+  await seedDatabase(db);
   const { default: app } = await import('./src/app.js');
   ({ default: pool } = await import('./src/db/connection.js'));
   server = app.listen(5001, '127.0.0.1');

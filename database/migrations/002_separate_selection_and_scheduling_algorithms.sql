@@ -1,5 +1,3 @@
-USE testopt;
-
 ALTER TABLE optimization_runs
     ADD COLUMN selection_algorithm VARCHAR(50) NULL AFTER change_id,
     ADD COLUMN scheduling_strategy VARCHAR(50) NULL AFTER selection_algorithm;

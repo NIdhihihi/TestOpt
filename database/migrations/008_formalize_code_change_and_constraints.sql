@@ -1,5 +1,3 @@
-USE testopt;
-
 -- SRS §6.1: Formalize code_changes table with description, changed_module_ids, and submitted_at
 ALTER TABLE code_changes
     ADD COLUMN description TEXT NULL AFTER project_id,
