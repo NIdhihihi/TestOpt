@@ -122,7 +122,7 @@ export function computePipelineLayout3D({
   });
 
   // Sort modules inside each layer deterministically (changed first, then alphabetical)
-  layerBuckets.forEach((bucket, d) => {
+  layerBuckets.forEach((bucket) => {
     bucket.sort((a, b) => {
       const aChanged = changedModuleSet.has(a) ? -1 : 0;
       const bChanged = changedModuleSet.has(b) ? -1 : 0;

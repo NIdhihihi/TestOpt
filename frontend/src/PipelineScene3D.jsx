@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import * as THREE from 'three'
 
 const clamp = (x, a, b) => Math.min(b, Math.max(a, x))
@@ -571,8 +571,8 @@ export default function PipelineScene3D({
       const kLerp = 1 - Math.exp(-dt * 7)
       const tmpCol = new THREE.Color()
 
-      nodeMeshMap.forEach(({ node, mesh, halo, currentColor, targetColor }, id) => {
-        let tCol = PALETTE.neutral
+      nodeMeshMap.forEach(({ node, mesh, halo, currentColor }, id) => {
+        let tCol
         let tEm = 0.15
         let tOp = 1
         let tHalo = 0

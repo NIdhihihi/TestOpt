@@ -20,7 +20,6 @@ export default function VisualScene({
   tests = [],
   changedFiles = [],
   changedModules = [],
-  plan = null,
   timeBudget = null,
   workerCount = 2,
   algorithm = 'GREEDY',
@@ -35,7 +34,6 @@ export default function VisualScene({
   fullEstimate = null,
   selectedEstimate = null,
   savedEstimate = null,
-  notice = '',
   phase = 0,
   paused = false,
 }) {
@@ -48,18 +46,14 @@ export default function VisualScene({
     return (
       <PipelineTableView
         tests={tests}
-        changedFiles={changedFiles}
-        changedModules={changedModules}
         timeBudget={timeBudget}
         workerCount={workerCount}
         algorithm={algorithm}
         algorithmDetails={algorithmDetails}
-        weights={weights}
         coverageGap={coverageGap}
         isValidationComplete={isValidationComplete}
         measuredSelectedDuration={measuredSelectedDuration}
         realizedSavings={realizedSavings}
-        fullEstimate={fullEstimate}
         selectedEstimate={selectedEstimate}
         savedEstimate={savedEstimate}
       />
@@ -72,11 +66,6 @@ export default function VisualScene({
         analysis={analysis}
         tests={tests}
         changedFiles={changedFiles}
-        changedModules={changedModules}
-        plan={plan}
-        timeBudget={timeBudget}
-        algorithm={algorithm}
-        weights={weights}
         phase={phase}
         paused={paused}
       />
@@ -89,7 +78,6 @@ export default function VisualScene({
       tests={tests}
       changedFiles={changedFiles}
       changedModules={changedModules}
-      plan={plan}
       timeBudget={timeBudget}
       workerCount={workerCount}
       algorithm={algorithm}
@@ -104,7 +92,6 @@ export default function VisualScene({
       fullEstimate={fullEstimate}
       selectedEstimate={selectedEstimate}
       savedEstimate={savedEstimate}
-      notice={notice}
       phase={phase}
       paused={paused}
     />
@@ -116,7 +103,6 @@ function PipelineScene3DContainer({
   tests = [],
   changedFiles = [],
   changedModules = [],
-  plan = null,
   timeBudget = null,
   workerCount = 2,
   algorithm = 'GREEDY',
@@ -131,7 +117,6 @@ function PipelineScene3DContainer({
   fullEstimate = null,
   selectedEstimate = null,
   savedEstimate = null,
-  notice = '',
   phase = 0,
   paused = false,
 }) {
@@ -195,7 +180,6 @@ function PipelineScene3DContainer({
         fullEstimate={fullEstimate}
         selectedEstimate={selectedEstimate}
         savedEstimate={savedEstimate}
-        notice={notice}
       />
       <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: 0 }}>
         <PipelineScene3D
@@ -219,11 +203,6 @@ function DependencyGraphCanvas({
   analysis,
   tests = [],
   changedFiles = [],
-  changedModules = [],
-  plan = null,
-  timeBudget = null,
-  algorithm = 'GREEDY',
-  weights = null,
   phase = 0,
 }) {
   const svgRef = useRef(null)

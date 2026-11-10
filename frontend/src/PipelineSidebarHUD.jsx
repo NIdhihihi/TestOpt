@@ -21,7 +21,6 @@ export default function PipelineSidebarHUD({
   fullEstimate = null,
   selectedEstimate = null,
   savedEstimate = null,
-  notice,
 }) {
   const [searchQuery, setSearchQuery] = useState('')
 

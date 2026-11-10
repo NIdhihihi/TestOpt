@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react'
 import {
@@ -33,10 +34,10 @@ function VisualScene(props) {
     </Suspense>
   )
 }
-function LegacyWorkspace() {
+function LegacyWorkspace(props) {
   return (
     <Suspense fallback={<p role="status">Loading manual tools…</p>}>
-      <ManualWorkspace />
+      <ManualWorkspace {...props} />
     </Suspense>
   )
 }
@@ -129,6 +130,7 @@ function AuthScreen({ onAuthenticated }) {
       try {
         const response = await fetch(`${API}/auth/verify-otp-and-register`, {
           method: 'POST',
+          credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ...form, otp }),
         })
@@ -151,6 +153,7 @@ function AuthScreen({ onAuthenticated }) {
     try {
       const response = await fetch(`${API}/auth/login`, {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: form.email, password: form.password }),
       })
@@ -333,32 +336,41 @@ function AuthScreen({ onAuthenticated }) {
   )
 }
 
-function getInitialSession() {
-  if (typeof window === 'undefined') return null
-  const hash = window.location.hash
-  if (hash.includes('oauth_session=')) {
+let refreshInFlight = null
+
+async function requestCookieRefresh(retries = 1) {
+  if (refreshInFlight) return refreshInFlight
+  refreshInFlight = (async () => {
     try {
-      const raw = hash.split('oauth_session=')[1].split('&')[0]
-      const data = JSON.parse(decodeURIComponent(raw))
-      if (data?.accessToken) {
-        localStorage.setItem('testopt-session', JSON.stringify(data))
-        window.location.hash = '#dashboard'
-        return data
+      for (let attempt = 0; attempt <= retries; attempt += 1) {
+        const response = await fetch(`${API}/auth/refresh`, {
+          method: 'POST',
+          credentials: 'include',
+        })
+        if (response.status === 409 && attempt < retries) {
+          await new Promise((resolve) => setTimeout(resolve, 150))
+          continue
+        }
+        if (!response.ok) return null
+        return await response.json()
       }
+      return null
     } catch {
-      // ignore
+      return null
+    } finally {
+      refreshInFlight = null
     }
-  }
-  try {
-    return JSON.parse(localStorage.getItem('testopt-session'))
-  } catch {
-    return null
-  }
+  })()
+  return refreshInFlight
 }
 
 function getInitialOAuthError() {
   if (typeof window === 'undefined') return ''
   const hash = window.location.hash
+  if (hash === '#oauth=ok' || hash.startsWith('#oauth=ok&')) {
+    window.history.replaceState(null, '', '#dashboard')
+    return ''
+  }
   if (hash.includes('oauth_error=')) {
     try {
       const raw = hash.split('oauth_error=')[1].split('&')[0]
@@ -372,7 +384,8 @@ function getInitialOAuthError() {
 }
 
 export default function App() {
-  const [session, setSession] = useState(getInitialSession)
+  const [session, setSession] = useState(null)
+  const [authBootstrapping, setAuthBootstrapping] = useState(true)
   const [page, setPage] = useState(pageFromHash)
   const [projects, setProjects] = useState([]),
     [projectId, setProjectId] = useState('')
@@ -401,34 +414,79 @@ export default function App() {
     setPipelineViewMode(mode)
     try {
       localStorage.setItem('testopt_pipeline_view', mode)
-    } catch {}
+    } catch {
+      /* ignore storage restrictions */
+    }
   }
-  const token = session?.accessToken
+  const token = session?.accessToken || ''
+  const authenticated = Boolean(token)
+  const tokenRef = useRef(token)
+  useEffect(() => {
+    tokenRef.current = token
+  }, [token])
+
+  const clearWorkspaceSession = useCallback(() => {
+    tokenRef.current = ''
+    setSession(null)
+    setProjects([])
+    setProjectId('')
+    setVersions([])
+    setVersionId('')
+    setPlans([])
+    setCurrentId('')
+  }, [])
+
+  useEffect(() => {
+    let active = true
+    try {
+      localStorage.removeItem('testopt-session')
+    } catch {
+      /* ignore storage restrictions */
+    }
+    requestCookieRefresh().then((data) => {
+      if (!active) return
+      if (data?.accessToken) {
+        tokenRef.current = data.accessToken
+        setSession(data)
+      }
+      setAuthBootstrapping(false)
+    })
+    return () => {
+      active = false
+    }
+  }, [])
+
   const request = useCallback(
     async (path, method = 'GET', body) => {
-      const response = await fetch(API + path, {
-        method,
-        headers: {
-          Authorization: `Bearer ${token}`,
-          ...(body ? { 'Content-Type': 'application/json' } : {}),
-        },
-        body: body ? JSON.stringify(body) : undefined,
-      })
+      const call = (bearer) =>
+        fetch(API + path, {
+          method,
+          credentials: 'include',
+          headers: {
+            ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
+            ...(body ? { 'Content-Type': 'application/json' } : {}),
+          },
+          body: body ? JSON.stringify(body) : undefined,
+        })
+
+      let response = await call(tokenRef.current)
+      if (response.status === 401) {
+        const refreshed = await requestCookieRefresh()
+        if (refreshed?.accessToken) {
+          tokenRef.current = refreshed.accessToken
+          setSession(refreshed)
+          response = await call(refreshed.accessToken)
+        }
+      }
+
       const data = await response.json()
       if (response.status === 401) {
-        localStorage.removeItem('testopt-session')
-        setSession(null)
-        setProjects([])
-        setProjectId('')
-        setVersions([])
-        setVersionId('')
-        setPlans([])
-        setCurrentId('')
+        clearWorkspaceSession()
       }
       if (!response.ok) throw new Error(data.message || 'Request failed.')
       return data
     },
-    [token],
+    [clearWorkspaceSession],
   )
   const source = `/source/projects/${projectId}`
   const project = projects.find((item) => item.projectId === projectId)
@@ -459,7 +517,7 @@ export default function App() {
     document.title = `TestOpt · ${PAGES.find(([key]) => key === page)?.[1]}`
   }, [page])
   useEffect(() => {
-    if (!token) return
+    if (!authenticated) return
     let active = true
     const timer = setTimeout(async () => {
       setLoading(true)
@@ -483,9 +541,9 @@ export default function App() {
       active = false
       clearTimeout(timer)
     }
-  }, [token, request])
+  }, [authenticated, request])
   useEffect(() => {
-    if (!projectId || !token) return
+    if (!projectId || !authenticated) return
     let active = true
     const timer = setTimeout(async () => {
       setLoading(true)
@@ -517,7 +575,7 @@ export default function App() {
       active = false
       clearTimeout(timer)
     }
-  }, [projectId, source, token, request])
+  }, [projectId, source, authenticated, request])
   useEffect(() => {
     if (!executing) return
     let active = true,
@@ -648,6 +706,21 @@ export default function App() {
       setSetup('upload')
     })
   }
+  async function loadDemoProject() {
+    await perform(async () => {
+      const data = await request('/source/projects/demo', 'POST', {
+        organizationId: session?.organizations?.[0]?.organizationId,
+      })
+      const fresh = await request('/catalog/projects?includeArchived=true')
+      setProjects(fresh.projects)
+      chooseProject(data.project.projectId)
+      setSetup('')
+      location.hash = 'dashboard'
+      setNotice(
+        `Loaded isolated ${data.project.projectName}${data.analysis?.tests ? ` (${data.analysis.tests.length} test files)` : ''} into your workspace. Click Run optimizer to analyze.`,
+      )
+    })
+  }
   async function upload(fileList) {
     if (!fileList.length) return
     await perform(async () => {
@@ -739,17 +812,30 @@ export default function App() {
       setNotice('Project archived. Its saved history remains available.')
     })
   }
-  function signOut() {
-    localStorage.removeItem('testopt-session')
-    setSession(null)
-    chooseProject('')
-    setProjects([])
+  async function signOut() {
+    try {
+      await fetch(`${API}/auth/logout`, {
+        method: 'POST',
+        credentials: 'include',
+      })
+    } catch {
+      /* clear local state even if network fails */
+    }
+    clearWorkspaceSession()
   }
-  if (!token)
+  if (authBootstrapping)
+    return (
+      <main className="auth-shell">
+        <div className="card loading" role="status">
+          Restoring your session…
+        </div>
+      </main>
+    )
+  if (!authenticated)
     return (
       <AuthScreen
         onAuthenticated={(data) => {
-          localStorage.setItem('testopt-session', JSON.stringify(data))
+          tokenRef.current = data.accessToken || ''
           setError('')
           setNotice('')
           setSession(data)
@@ -794,6 +880,9 @@ export default function App() {
       </button>
       <button className="btn" onClick={goUpload} disabled={busy || archived}>
         ↑ Upload version
+      </button>
+      <button className="btn" onClick={loadDemoProject} disabled={busy}>
+        ⚡ Load demo
       </button>
     </>
   )
@@ -876,7 +965,7 @@ export default function App() {
         </button>
         {showLegacy && (
           <div className="legacy-workspace">
-            <LegacyWorkspace />
+            <LegacyWorkspace request={request} session={session} onSignOut={signOut} />
           </div>
         )}
       </section>
@@ -919,7 +1008,6 @@ export default function App() {
         tests={model.tests}
         changedFiles={model.changedFiles}
         changedModules={model.changedModules}
-        plan={model.plan}
         timeBudget={model.timeBudget}
         workerCount={model.workerCount}
         algorithm={model.algorithm}
@@ -934,7 +1022,6 @@ export default function App() {
         fullEstimate={model.fullEstimate}
         selectedEstimate={model.selectedEstimate}
         savedEstimate={model.savedEstimate}
-        notice={model.notice}
         phase={phase}
         paused={paused}
       />
@@ -1306,21 +1393,36 @@ export default function App() {
               </p>
             )}
             {setup === 'project' ? (
-              <form onSubmit={createProject}>
-                <label>
-                  Project name
-                  <input
-                    autoFocus
-                    required
-                    maxLength="150"
-                    value={newName}
-                    onChange={(event) => setNewName(event.target.value)}
-                  />
-                </label>
-                <button className="run" disabled={busy || !newName.trim()}>
-                  {busy ? 'Creating…' : 'Create project →'}
-                </button>
-              </form>
+              <>
+                <form onSubmit={createProject}>
+                  <label>
+                    Project name
+                    <input
+                      autoFocus
+                      required
+                      maxLength="150"
+                      value={newName}
+                      onChange={(event) => setNewName(event.target.value)}
+                    />
+                  </label>
+                  <button className="run" disabled={busy || !newName.trim()}>
+                    {busy ? 'Creating…' : 'Create project →'}
+                  </button>
+                </form>
+                <div style={{ marginTop: '14px', paddingTop: '14px', borderTop: '1px solid var(--border, #1e293b)' }}>
+                  <p className="fine-print" style={{ marginBottom: '8px' }}>
+                    Or create an isolated sandbox copy of the ShopCart demo project in your own organization:
+                  </p>
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={busy}
+                    onClick={loadDemoProject}
+                  >
+                    ⚡ Load ShopCart demo project
+                  </button>
+                </div>
+              </>
             ) : (
               <>
                 <p>

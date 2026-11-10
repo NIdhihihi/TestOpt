@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import SourceWorkspace from './SourceWorkspace.jsx'
 
@@ -28,54 +28,43 @@ function getImpactLevels(changedModuleIds, dependencies) {
 }
 
 
-function CatalogEditor() {
+function CatalogEditor({ request: hostRequest, authenticated }) {
   const [projects, setProjects] = useState([])
   const [projectId, setProjectId] = useState('')
   const [catalog, setCatalog] = useState(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const token = (() => {
-    try {
-      return JSON.parse(window.localStorage.getItem('testopt-session'))
-        ?.accessToken
-    } catch {
-      return null
-    }
-  })()
-  async function request(path, method = 'GET', body) {
-    const response = await fetch(`${API}${path}`, {
-      method,
-      headers: {
-        ...(body ? { 'Content-Type': 'application/json' } : {}),
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: body ? JSON.stringify(body) : undefined,
-    })
-    const data = await response.json()
-    if (!response.ok) throw new Error(data.message || 'Request failed.')
-    return data
-  }
-  async function load(id) {
-    const data = await request(`/catalog/projects/${id}`)
-    setCatalog(data)
-  }
-  // The session token is read once when this standalone editor mounts.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const load = useCallback(
+    async (id) => {
+      const data = await hostRequest(`/catalog/projects/${id}`)
+      setCatalog(data)
+    },
+    [hostRequest],
+  )
   useEffect(() => {
-    if (!token) return
-    request('/catalog/projects')
+    if (!authenticated) return undefined
+    let active = true
+    hostRequest('/catalog/projects')
       .then((data) => {
+        if (!active) return
         setProjects(data.projects)
         if (data.projects[0]) {
           setProjectId(data.projects[0].projectId)
-          load(data.projects[0].projectId)
+          load(data.projects[0].projectId).catch((reason) => {
+            if (active) setError(reason.message)
+          })
         }
       })
-      .catch((reason) => setError(reason.message))
-  }, [])
+      .catch((reason) => {
+        if (active) setError(reason.message)
+      })
+    return () => {
+      active = false
+    }
+  }, [authenticated, hostRequest, load])
   async function saveModule(module) {
     try {
-      await request(
+      await hostRequest(
         `/catalog/projects/${projectId}/modules/${module.moduleId}`,
         'PUT',
         {
@@ -91,7 +80,7 @@ function CatalogEditor() {
   }
   async function saveTest(test) {
     try {
-      await request(
+      await hostRequest(
         `/catalog/projects/${projectId}/tests/${test.testId}`,
         'PUT',
         {
@@ -107,7 +96,7 @@ function CatalogEditor() {
       setError(reason.message)
     }
   }
-  if (!token) return null
+  if (!authenticated) return null
   return (
     <section className="panel catalog-editor">
       <div className="section-heading">
@@ -203,50 +192,35 @@ function CatalogEditor() {
   )
 }
 
-function CsvImporter() {
+function CsvImporter({ request: hostRequest, authenticated }) {
   const [file, setFile] = useState(null)
   const [projects, setProjects] = useState([])
   const [projectId, setProjectId] = useState('')
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
-  const token = (() => {
-    try {
-      return JSON.parse(window.localStorage.getItem('testopt-session'))
-        ?.accessToken
-    } catch {
-      return null
-    }
-  })()
-  async function request(path, method = 'GET', body) {
-    const response = await fetch(API + path, {
-      method,
-      headers: {
-        ...(body ? { 'Content-Type': 'application/json' } : {}),
-        ...(token ? { Authorization: 'Bearer ' + token } : {}),
-      },
-      body: body ? JSON.stringify(body) : undefined,
-    })
-    const data = await response.json()
-    if (!response.ok) throw new Error(data.message || 'Request failed.')
-    return data
-  }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
-    if (!token) return
-    request('/catalog/projects')
+    if (!authenticated) return undefined
+    let active = true
+    hostRequest('/catalog/projects')
       .then((data) => {
+        if (!active) return
         setProjects(data.projects)
         setProjectId(data.projects[0]?.projectId || '')
       })
-      .catch((reason) => setError(reason.message))
-  }, [])
+      .catch((reason) => {
+        if (active) setError(reason.message)
+      })
+    return () => {
+      active = false
+    }
+  }, [authenticated, hostRequest])
   async function submit(event) {
     event.preventDefault()
     if (!file || !projectId) return
     setError('')
     setMessage('')
     try {
-      const result = await request(
+      const result = await hostRequest(
         '/catalog/projects/' + projectId + '/import',
         'POST',
         { csvText: await file.text() },
@@ -268,7 +242,7 @@ function CsvImporter() {
       setError(reason.message)
     }
   }
-  if (!token) return null
+  if (!authenticated) return null
   return (
     <section className="panel">
       <div className="section-heading">
@@ -313,14 +287,11 @@ function CsvImporter() {
   )
 }
 
-function App() {
-  const [session, setSession] = useState(() => {
-    try {
-      return JSON.parse(window.localStorage.getItem('testopt-session'))
-    } catch {
-      return null
-    }
-  })
+function App({ hostRequest, hostSession = null, onSignOut }) {
+  const [localSession, setLocalSession] = useState(null)
+  const session = hostSession ?? localSession
+  const accessToken = session?.accessToken || ''
+  const authenticated = Boolean(accessToken)
   const [analytics, setAnalytics] = useState(null)
   const [projects, setProjects] = useState([])
   const [projectId, setProjectId] = useState('')
@@ -366,103 +337,129 @@ function App() {
     workspacePath: '',
     commandArgs: 'test',
   })
-  async function api(path, method = 'GET', body) {
-    const headers = {
-      ...(body ? { 'Content-Type': 'application/json' } : {}),
-      ...(session?.accessToken
-        ? { Authorization: `Bearer ${session.accessToken}` }
-        : {}),
-    }
-    const response = await fetch(`${API}${path}`, {
-      method,
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-    })
-    const data = await response.json()
-    if (!response.ok) throw new Error(data.message || 'Request failed.')
-    return data
-  }
-  async function loadProjects() {
+  const projectsRef = useRef(projects)
+  useEffect(() => {
+    projectsRef.current = projects
+  }, [projects])
+  const accessTokenRef = useRef(accessToken)
+  useEffect(() => {
+    accessTokenRef.current = accessToken
+  }, [accessToken])
+
+  const api = useCallback(
+    async (path, method = 'GET', body) => {
+      if (hostRequest) return hostRequest(path, method, body)
+      const bearer = accessTokenRef.current
+      const headers = {
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+        ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
+      }
+      const response = await fetch(`${API}${path}`, {
+        method,
+        credentials: 'include',
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.message || 'Request failed.')
+      return data
+    },
+    [hostRequest],
+  )
+  const loadProjects = useCallback(async () => {
     const data = await api('/catalog/projects?includeArchived=true')
     setProjects(data.projects)
     return data.projects
-  }
-  async function loadProject(id = projectId) {
-    if (!id) return
-    if (projects.find((item) => item.projectId === id)?.archivedAt) {
-      setModules([])
-      setCatalog(null)
-      setRuns([])
-      setAnalytics(null)
-      return
-    }
-    const [
-      moduleData,
-      workerData,
-      catalogData,
-      runData,
-      runnerData,
-      analyticsData,
-    ] = await Promise.all([
-      api(`/optimization/projects/${id}/modules`),
-      api('/optimization/workers'),
-      api(`/catalog/projects/${id}`),
-      api(`/execution/projects/${id}/runs`),
-      api(`/catalog/projects/${id}/runner`),
-      api(`/execution/projects/${id}/analytics`),
-    ])
-    setModules(moduleData.modules)
-    setWorkers(workerData.workers)
-    setCatalog(catalogData)
-    setRuns(runData.runs)
-    setAnalytics(analyticsData)
-    setRunnerConfigured(Boolean(runnerData.runnerConfig))
-    if (runnerData.runnerConfig)
-      setRunnerForm({
-        workspacePath: runnerData.runnerConfig.workspacePath,
-        commandArgs: runnerData.runnerConfig.commandArgs.join(' '),
-      })
-    else setRunnerForm({ workspacePath: '', commandArgs: 'test' })
-    setChanged([])
-    setOptimization(null)
-    setPlan(null)
-    setComparisonData(null)
-    setIsRetuning(false)
-    setExecution(null)
-    setWorkerCount((value) =>
-      Math.min(
-        Math.max(1, Number(value)),
-        Math.max(1, workerData.workers.length),
-      ),
-    )
-  }
-  // Load catalog data only after a signed session exists.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api])
+  const loadProject = useCallback(
+    async (id) => {
+      if (!id) return
+      if (projectsRef.current.find((item) => item.projectId === id)?.archivedAt) {
+        setModules([])
+        setCatalog(null)
+        setRuns([])
+        setAnalytics(null)
+        return
+      }
+      const [
+        moduleData,
+        workerData,
+        catalogData,
+        runData,
+        runnerData,
+        analyticsData,
+      ] = await Promise.all([
+        api(`/optimization/projects/${id}/modules`),
+        api('/optimization/workers'),
+        api(`/catalog/projects/${id}`),
+        api(`/execution/projects/${id}/runs`),
+        api(`/catalog/projects/${id}/runner`),
+        api(`/execution/projects/${id}/analytics`),
+      ])
+      setModules(moduleData.modules)
+      setWorkers(workerData.workers)
+      setCatalog(catalogData)
+      setRuns(runData.runs)
+      setAnalytics(analyticsData)
+      setRunnerConfigured(Boolean(runnerData.runnerConfig))
+      if (runnerData.runnerConfig)
+        setRunnerForm({
+          workspacePath: runnerData.runnerConfig.workspacePath,
+          commandArgs: runnerData.runnerConfig.commandArgs.join(' '),
+        })
+      else setRunnerForm({ workspacePath: '', commandArgs: 'test' })
+      setChanged([])
+      setOptimization(null)
+      setPlan(null)
+      setComparisonData(null)
+      setIsRetuning(false)
+      setExecution(null)
+      setWorkerCount((value) =>
+        Math.min(
+          Math.max(1, Number(value)),
+          Math.max(1, workerData.workers.length),
+        ),
+      )
+    },
+    [api],
+  )
   useEffect(() => {
-    if (!session?.accessToken) return undefined
+    if (!authenticated) return undefined
+    let active = true
     const timer = window.setTimeout(() => {
       loadProjects()
         .then((items) => {
+          if (!active) return
           if (items.some((item) => !item.archivedAt))
             setProjectId(items.find((item) => !item.archivedAt).projectId)
           else setError('Create a project before starting an optimization run.')
         })
-        .catch((requestError) => setError(requestError.message))
+        .catch((requestError) => {
+          if (active) setError(requestError.message)
+        })
     }, 0)
-    return () => window.clearTimeout(timer)
-  }, [session])
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => {
+      active = false
+      window.clearTimeout(timer)
+    }
+  }, [authenticated, loadProjects])
   useEffect(() => {
-    if (!session?.accessToken || !projectId) return undefined
-    const timer = window.setTimeout(
-      () =>
-        loadProject(projectId)
-          .then(() => setError(''))
-          .catch((requestError) => setError(requestError.message)),
-      0,
-    )
-    return () => window.clearTimeout(timer)
-  }, [projectId, session])
+    if (!authenticated || !projectId) return undefined
+    let active = true
+    const timer = window.setTimeout(() => {
+      loadProject(projectId)
+        .then(() => {
+          if (active) setError('')
+        })
+        .catch((requestError) => {
+          if (active) setError(requestError.message)
+        })
+    }, 0)
+    return () => {
+      active = false
+      window.clearTimeout(timer)
+    }
+  }, [authenticated, projectId, loadProject])
   const selectedNames = useMemo(
     () =>
       modules
@@ -652,8 +649,8 @@ function App() {
     }
   }
   function signOut() {
-    window.localStorage.removeItem('testopt-session')
-    setSession(null)
+    if (onSignOut) onSignOut()
+    else setLocalSession(null)
   }
   if (!session?.accessToken)
     return (
@@ -1598,12 +1595,12 @@ function App() {
             </form>
           </div>
         </section>
-        <CsvImporter />
-        <CatalogEditor />
+        <CsvImporter request={api} authenticated={authenticated} />
+        <CatalogEditor request={api} authenticated={authenticated} />
       </details>
     </main>
   )
 }
-export default function Root() {
-  return <App />
+export default function Root({ request, session, onSignOut }) {
+  return <App hostRequest={request} hostSession={session} onSignOut={onSignOut} />
 }

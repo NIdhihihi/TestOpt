@@ -3,18 +3,14 @@ import { formatDuration } from './workspaceModel.js'
 
 export default function PipelineTableView({
   tests = [],
-  changedFiles = [],
-  changedModules = [],
   timeBudget,
   workerCount = 2,
   algorithm = 'GREEDY',
   algorithmDetails,
-  weights,
   coverageGap = [],
   isValidationComplete = false,
   measuredSelectedDuration = null,
   realizedSavings = null,
-  fullEstimate = null,
   selectedEstimate = null,
   savedEstimate = null,
   onSelectTest,
