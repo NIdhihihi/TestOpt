@@ -184,7 +184,7 @@ export async function rotateRefreshToken(pool, rawToken, now = Date.now()) {
     if (row.revoked_at !== null) {
       const graceMs = getRefreshRotationGraceMs();
       const revokedAgeMs = now - new Date(row.revoked_at).getTime();
-      if (row.replaced_by_id && graceMs > 0 && revokedAgeMs >= 0 && revokedAgeMs < graceMs) {
+      if (row.replaced_by_id && graceMs > 0 && revokedAgeMs >= -1000 && revokedAgeMs < graceMs) {
         await conn.rollback();
         committed = true;
         throw Object.assign(new Error("Refresh already rotated; retry with the latest session."), { statusCode: 409 });

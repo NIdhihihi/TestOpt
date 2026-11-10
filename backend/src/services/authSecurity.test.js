@@ -211,6 +211,15 @@ test("rotateRefreshToken rotates tokens and revokes entire family on reuse", asy
     assert.deepEqual(familyRevocations, []);
     assert.equal(tokens.get("hash_active_child").revoked_at, null);
 
+    // Sub-second forward rounding or skew (< 1s) within grace still resolves as non-destructive 409
+    tokens.get(hash).revoked_at = new Date(Date.now() + 400);
+    await assert.rejects(
+      () => rotateRefreshToken(fakePool, raw),
+      (err) => err.statusCode === 409,
+    );
+    assert.deepEqual(familyRevocations, []);
+    assert.equal(tokens.get("hash_active_child").revoked_at, null);
+
     // Outside concurrent grace window (> 10s), replay triggers reuse detection and revokes entire family
     tokens.get(hash).revoked_at = new Date(Date.now() - 20_000);
     await assert.rejects(

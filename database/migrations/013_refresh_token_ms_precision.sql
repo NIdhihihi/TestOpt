@@ -1,0 +1,4 @@
+ALTER TABLE refresh_tokens
+    MODIFY COLUMN expires_at DATETIME(3) NOT NULL,
+    MODIFY COLUMN max_expires_at DATETIME(3) NOT NULL,
+    MODIFY COLUMN revoked_at DATETIME(3) NULL;
