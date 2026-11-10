@@ -1,0 +1,7 @@
+{
+  "name": "sample-checkout-service",
+  "version": "1.0.0",
+  "description": "Production-style e-commerce checkout and order service for TestOpt verification",
+  "type": "module"
+}
+
