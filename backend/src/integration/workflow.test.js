@@ -4,12 +4,15 @@ import app from "../app.js";
 import { example } from "./fixtures/demoProject.js";
 import pool from "../db/connection.js";
 import { executionQueue } from "../queue/executionQueue.js";
+import { setVerificationEmailSink } from "../services/emailService.js";
+import { handleOAuthUser } from "../routes/auth.js";
 
 let server;
 let apiBaseUrl;
 let accessToken;
 let authenticatedProjectId;
 let importedAuthModuleId;
+const capturedOtps = new Map();
 const createdRunIds = [];
 const createdUserIds = [];
 const createdOrganizationIds = [];
@@ -24,14 +27,46 @@ const originalSimulation = {
   workerFailure: process.env.SIMULATED_WORKER_FAILURE_PERCENT,
 };
 
-async function post(path, body, token = accessToken) {
+function extractRefreshCookie(headers) {
+  const cookies = headers.getSetCookie?.() || [];
+  for (const cookie of cookies) {
+    const match = cookie.match(/testopt_refresh=([^;]+)/);
+    if (match && match[1]) return `testopt_refresh=${match[1]}`;
+  }
+  return null;
+}
+
+async function post(path, body, token = accessToken, extraHeaders = {}) {
   const response = await fetch(`${apiBaseUrl}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...extraHeaders,
+    },
     body: JSON.stringify(body),
   });
 
-  return { status: response.status, body: await response.json() };
+  return { status: response.status, headers: response.headers, body: await response.json() };
+}
+
+async function registerViaOtp({ name, email, password, organizationName }) {
+  const sendRes = await post("/auth/send-otp", { email, name }, null);
+  assert.equal(sendRes.status, 200, sendRes.body.message);
+  assert.equal("otp" in sendRes.body, false, "OTP must never be leaked in HTTP JSON");
+
+  const otp = capturedOtps.get(email.toLowerCase());
+  assert.match(String(otp), /^\d{6}$/, "Expected 6-digit OTP in mail sink");
+
+  const verifyRes = await post("/auth/verify-otp-and-register", {
+    name,
+    email,
+    password,
+    organizationName,
+    otp,
+  }, null);
+  assert.equal(verifyRes.status, 201, verifyRes.body.message);
+  return verifyRes;
 }
 
 async function put(path, body, token = accessToken) {
@@ -114,6 +149,9 @@ async function saveHistory(testIds) {
 
 before(async () => {
   process.env.JWT_SECRET = "integration-test-secret-at-least-thirty-two-characters";
+  setVerificationEmailSink(({ email, otp }) => {
+    capturedOtps.set(email.toLowerCase(), otp);
+  });
   const [workers] = await pool.query("SELECT worker_id, worker_status FROM workers");
   originalWorkerStatuses = workers;
   server = await new Promise((resolve) => {
@@ -123,6 +161,7 @@ before(async () => {
 });
 
 after(async () => {
+  setVerificationEmailSink(null);
   for (const jobId of createdJobIds) await pool.query("DELETE FROM execution_jobs WHERE job_id = ?", [jobId]);
   for (const runId of createdRunIds) await removeRun(runId);
   for (const worker of originalWorkerStatuses) {
@@ -160,19 +199,32 @@ after(async () => {
   if (server) await new Promise((resolve) => server.close(resolve));
 });
 
-test("registers, signs in, and returns the authenticated organization", { concurrency: false }, async () => {
+test("registers via verified OTP, blocks unverified /register, signs in, and isolates org access", { concurrency: false }, async () => {
   const email = `integration-${Date.now()}@testopt.local`;
-  const registration = await post("/auth/register", {
+  const retired = await post("/auth/register", {
+    name: "Retired Caller",
+    email,
+    password: "A-long-integration-password-123",
+    organizationName: "Retired Org",
+  }, null);
+  assert.equal(retired.status, 410);
+
+  const registration = await registerViaOtp({
     name: "Integration User",
     email,
     password: "A-long-integration-password-123",
     organizationName: "Integration Organization",
   });
-  assert.equal(registration.status, 201, registration.body.message);
   assert.ok(registration.body.accessToken);
+  assert.ok(extractRefreshCookie(registration.headers), "Registration must issue HttpOnly refresh cookie");
   accessToken = registration.body.accessToken;
   createdUserIds.push(registration.body.user.userId);
   createdOrganizationIds.push(registration.body.organization.organizationId);
+
+  // New users must not automatically have access to unshared ORG_DEFAULT seeded project
+  const isolatedCheck = await get("/catalog/projects/P_TESTOPT", accessToken);
+  assert.equal(isolatedCheck.status, 403);
+
   await pool.query("INSERT INTO organization_members (organization_id, user_id, role) VALUES ('ORG_DEFAULT', ?, 'OWNER')", [registration.body.user.userId]);
 
   const project = await post("/catalog/projects", {
@@ -183,8 +235,9 @@ test("registers, signs in, and returns the authenticated organization", { concur
   createdProjectIds.push(project.body.project.projectId);
   authenticatedProjectId = project.body.project.projectId;
 
-  const login = await post("/auth/login", { email, password: "A-long-integration-password-123" });
+  const login = await post("/auth/login", { email, password: "A-long-integration-password-123" }, null);
   assert.equal(login.status, 200, login.body.message);
+  assert.ok(extractRefreshCookie(login.headers));
   assert.equal(login.body.organizations[0].role, "OWNER");
 });
 
@@ -301,7 +354,7 @@ test("enforces role governance: organization member roles and worker registratio
   assert.ok(membersRes.body.members.length >= 1);
 
   const devEmail = `dev-${Date.now()}@testopt.local`;
-  const devReg = await post("/auth/register", {
+  const devReg = await registerViaOtp({
     name: "Developer User",
     email: devEmail,
     password: "A-long-dev-password-123",
@@ -501,4 +554,174 @@ test("uploaded project discovery, bounded plans, permissions and offline executi
   const history = await get(`${base}/plans`);
   assert.ok(history.body.plans.length >= 3);
   assert.ok(history.body.plans.every(plan => plan.results.length === 0));
+});
+
+test("enforces OTP attempt lockouts, refresh rotation/reuse revocation, OAuth CSRF state, rate limits, and isolated demo loading", { concurrency: false }, async () => {
+  const email = `security-${Date.now()}@testopt.local`;
+  const password = "Strong-security-test-password-123";
+
+  // 1. OTP failure tracking & lockout after 5 bad attempts
+  const sendRes = await post("/auth/send-otp", { email, name: "Security Tester" }, null);
+  assert.equal(sendRes.status, 200);
+  for (let i = 0; i < 5; i += 1) {
+    const wrong = await post("/auth/verify-otp-and-register", {
+      name: "Security Tester",
+      email,
+      password,
+      organizationName: "Security Org",
+      otp: "000000",
+    }, null);
+    assert.equal(wrong.status, 400);
+  }
+  const locked = await post("/auth/verify-otp-and-register", {
+    name: "Security Tester",
+    email,
+    password,
+    organizationName: "Security Org",
+    otp: capturedOtps.get(email),
+  }, null);
+  assert.equal(locked.status, 400);
+  assert.match(locked.body.message, /Too many failed attempts/);
+
+  // Fresh OTP succeeds cleanly after old exhausted code is cleared cleanly by email cleanup
+  await pool.query("DELETE FROM email_verification_codes WHERE email = ?", [email]);
+  const reg = await registerViaOtp({ name: "Security Tester", email, password, organizationName: "Security Org" });
+  createdUserIds.push(reg.body.user.userId);
+  createdOrganizationIds.push(reg.body.organization.organizationId);
+  const cookie1 = extractRefreshCookie(reg.headers);
+  assert.ok(cookie1);
+
+  // 2. Refresh origin validation, rotation, and reuse family revocation
+  const badOrigin = await post("/auth/refresh", {}, null, {
+    cookie: cookie1,
+    origin: "https://evil.example",
+  });
+  assert.equal(badOrigin.status, 403);
+
+  const refreshed = await post("/auth/refresh", {}, null, { cookie: cookie1 });
+  assert.equal(refreshed.status, 200, refreshed.body.message);
+  assert.ok(refreshed.body.accessToken);
+  const cookie2 = extractRefreshCookie(refreshed.headers);
+  assert.ok(cookie2 && cookie2 !== cookie1);
+
+  // Concurrent replay of cookie1 within grace returns non-destructive 409 without revoking cookie2
+  const concurrentRetry = await post("/auth/refresh", {}, null, { cookie: cookie1 });
+  assert.equal(concurrentRetry.status, 409);
+
+  // Outside grace window, replaying cookie1 revokes the entire family (blocking cookie2 too)
+  const prevGrace = process.env.REFRESH_ROTATION_GRACE_MS;
+  try {
+    process.env.REFRESH_ROTATION_GRACE_MS = "0";
+    const reuse = await post("/auth/refresh", {}, null, { cookie: cookie1 });
+    assert.equal(reuse.status, 401);
+    const victimAttempt = await post("/auth/refresh", {}, null, { cookie: cookie2 });
+    assert.equal(victimAttempt.status, 401);
+  } finally {
+    if (prevGrace === undefined) delete process.env.REFRESH_ROTATION_GRACE_MS;
+    else process.env.REFRESH_ROTATION_GRACE_MS = prevGrace;
+  }
+
+  // Re-login and logout cleanly
+  const relogin = await post("/auth/login", { email, password }, null);
+  assert.equal(relogin.status, 200);
+  const cookie3 = extractRefreshCookie(relogin.headers);
+  const logoutRes = await post("/auth/logout", {}, null, { cookie: cookie3 });
+  assert.equal(logoutRes.status, 200);
+  assert.equal((await post("/auth/refresh", {}, null, { cookie: cookie3 })).status, 401);
+
+  // 3. OAuth state cookie verification rejects missing or mismatched state
+  const prevGithubId = process.env.GITHUB_CLIENT_ID;
+  const prevGoogleId = process.env.GOOGLE_CLIENT_ID;
+  try {
+    process.env.GITHUB_CLIENT_ID = "test_github_client_id";
+    process.env.GOOGLE_CLIENT_ID = "test_google_client_id";
+    const ghInit = await fetch(`${apiBaseUrl}/auth/github`, { redirect: "manual" });
+    assert.equal(ghInit.status, 302);
+    const ghLocation = new URL(ghInit.headers.get("location"));
+    const ghState = ghLocation.searchParams.get("state");
+    assert.ok(ghState);
+    const ghStateCookie = (ghInit.headers.getSetCookie?.() || []).find((c) => c.startsWith("testopt_oauth_state="))?.split(";")[0];
+    assert.ok(ghStateCookie);
+
+    // Mismatched state or cross-provider state must fail cleanly without issuing session
+    const ghBadState = await fetch(`${apiBaseUrl}/auth/github/callback?code=fake&state=tampered`, {
+      redirect: "manual",
+      headers: { cookie: ghStateCookie },
+    });
+    assert.equal(ghBadState.status, 302);
+    assert.match(ghBadState.headers.get("location"), /#oauth_error=/);
+
+    const googleCrossProvider = await fetch(`${apiBaseUrl}/auth/google/callback?code=fake&state=${encodeURIComponent(ghState)}`, {
+      redirect: "manual",
+      headers: { cookie: ghStateCookie },
+    });
+    assert.equal(googleCrossProvider.status, 302);
+    assert.match(googleCrossProvider.headers.get("location"), /#oauth_error=/);
+
+    // Block OAuth silent linking over existing LOCAL account or across providers
+    await assert.rejects(
+      handleOAuthUser({
+        email,
+        name: "Attacker",
+        provider: "GOOGLE",
+        providerId: `g-hijack-${Date.now()}`,
+      }),
+      (err) => err.statusCode === 409,
+    );
+
+    const oauthEmail = `oauth-only-${Date.now()}@testopt.local`;
+    const ghCreated = await handleOAuthUser({
+      email: oauthEmail,
+      name: "OAuth User",
+      provider: "GITHUB",
+      providerId: `gh-${Date.now()}`,
+    });
+    createdUserIds.push(ghCreated.user.userId);
+    createdOrganizationIds.push(ghCreated.organizations[0].organizationId);
+    assert.equal(ghCreated.isNew, true);
+
+    await assert.rejects(
+      handleOAuthUser({
+        email: oauthEmail,
+        name: "Cross Provider",
+        provider: "GOOGLE",
+        providerId: `g-cross-${Date.now()}`,
+      }),
+      (err) => err.statusCode === 409,
+    );
+  } finally {
+    if (prevGithubId === undefined) delete process.env.GITHUB_CLIENT_ID;
+    else process.env.GITHUB_CLIENT_ID = prevGithubId;
+    if (prevGoogleId === undefined) delete process.env.GOOGLE_CLIENT_ID;
+    else process.env.GOOGLE_CLIENT_ID = prevGoogleId;
+  }
+
+  // 4. Rate limit on repeated failed logins
+  const prevLimit = process.env.AUTH_RATE_LIMIT_LOGIN;
+  try {
+    process.env.AUTH_RATE_LIMIT_LOGIN = "2";
+    await post("/auth/login", { email, password: "wrong-password-1" }, null);
+    await post("/auth/login", { email, password: "wrong-password-2" }, null);
+    const limited = await post("/auth/login", { email, password: "wrong-password-3" }, null);
+    assert.equal(limited.status, 429);
+  } finally {
+    if (prevLimit === undefined) delete process.env.AUTH_RATE_LIMIT_LOGIN;
+    else process.env.AUTH_RATE_LIMIT_LOGIN = prevLimit;
+  }
+
+  // 5. Isolated ShopCart demo project loads into caller's own org and remains inaccessible to other orgs
+  assert.equal((await get("/catalog/projects/P_TESTOPT", reg.body.accessToken)).status, 403);
+  const demo = await post("/source/projects/demo", {}, reg.body.accessToken);
+  assert.equal(demo.status, 201, demo.body.message);
+  createdProjectIds.push(demo.body.project.projectId);
+  assert.equal(demo.body.project.organizationId, reg.body.organization.organizationId);
+  assert.equal(demo.body.analysis.supported, true);
+  assert.equal(demo.body.analysis.tests.length, 6);
+
+  const crossTenantPlan = await post(
+    `/source/projects/${demo.body.project.projectId}/versions/${demo.body.versionId}/plan`,
+    {},
+    accessToken,
+  );
+  assert.equal(crossTenantPlan.status, 403);
 });

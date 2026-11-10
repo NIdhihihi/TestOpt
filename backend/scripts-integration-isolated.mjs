@@ -29,8 +29,9 @@ try {
     await db.query(stmt);
   }
   await db.query('DROP TABLE schema_migrations');
+  await db.query('DROP TABLE refresh_tokens');
   await db.query('DROP TABLE email_verification_codes');
-  await db.query('ALTER TABLE users DROP COLUMN email_verified, DROP COLUMN auth_provider, DROP COLUMN auth_provider_id');
+  await db.query('ALTER TABLE users DROP INDEX idx_users_oauth_provider, DROP COLUMN email_verified, DROP COLUMN auth_provider, DROP COLUMN auth_provider_id');
   await db.query('ALTER TABLE projects DROP FOREIGN KEY fk_projects_organization, DROP COLUMN organization_id, DROP COLUMN archived_at');
   await db.query('DROP TABLE audit_events, organization_members, organizations, execution_jobs, project_runner_configs, testing_constraints, source_plans, source_versions, source_test_history');
   await db.query('ALTER TABLE selected_tests DROP COLUMN status');

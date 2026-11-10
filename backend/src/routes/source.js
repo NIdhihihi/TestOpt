@@ -2,15 +2,73 @@ import { Router } from 'express';
 import { randomUUID } from 'node:crypto';
 import pool from '../db/connection.js';
 import { requireAuth } from '../middleware/auth.js';
-import { requireProjectRole } from '../middleware/authorization.js';
+import { requireOrganizationRole, requireProjectRole } from '../middleware/authorization.js';
 import { validateSourceFiles, analyzeSource } from '../services/sourceAnalysis.js';
 import { planSource } from '../services/sourcePlanner.js';
 import { jsonValue } from '../services/sourceExecution.js';
 import { enqueueExecution } from '../queue/executionQueue.js';
+import { loadShopcartDemoPackage } from '../services/demoLoaderService.js';
 
 const router = Router();
 router.use(requireAuth);
 const fail = (res, error) => res.status(error.statusCode || 400).json({ success: false, message: error.message });
+
+router.post('/projects/demo', async (req, res) => {
+  const db = await pool.getConnection();
+  try {
+    let organizationId = typeof req.body?.organizationId === 'string' ? req.body.organizationId.trim() : '';
+    if (!organizationId) {
+      const [orgs] = await db.query(
+        `SELECT organization_id AS organizationId
+         FROM organization_members
+         WHERE user_id = ? AND role IN ('OWNER', 'ADMIN', 'TEST_MANAGER', 'DEVELOPER')
+         ORDER BY FIELD(role, 'OWNER', 'ADMIN', 'TEST_MANAGER', 'DEVELOPER')
+         LIMIT 1`,
+        [req.auth.sub],
+      );
+      if (!orgs[0]) {
+        return res.status(403).json({ success: false, message: 'No eligible organization membership found.' });
+      }
+      organizationId = orgs[0].organizationId;
+    } else {
+      await requireOrganizationRole(req.auth.sub, organizationId, ['OWNER', 'ADMIN', 'TEST_MANAGER', 'DEVELOPER']);
+    }
+
+    const rawName = typeof req.body?.projectName === 'string' ? req.body.projectName.trim() : '';
+    const projectName = rawName || 'ShopCart Demo';
+    if (projectName.length > 150) {
+      return res.status(400).json({ success: false, message: 'projectName must be at most 150 characters.' });
+    }
+
+    const { files, analysis } = await loadShopcartDemoPackage();
+    const projectId = `P_${randomUUID()}`;
+    const versionId = `SRC_${randomUUID()}`;
+    const description = 'Isolated ShopCart Node.js baseline loaded from examples/shopcart-demo/v1-baseline.';
+
+    await db.beginTransaction();
+    await db.query(
+      'INSERT INTO projects (project_id, organization_id, project_name, description) VALUES (?, ?, ?, ?)',
+      [projectId, organizationId, projectName, description],
+    );
+    await db.query(
+      'INSERT INTO source_versions (version_id, project_id, previous_version_id, files, analysis) VALUES (?, ?, NULL, ?, ?)',
+      [versionId, projectId, JSON.stringify(files), JSON.stringify(analysis)],
+    );
+    await db.commit();
+
+    return res.status(201).json({
+      success: true,
+      project: { projectId, organizationId, projectName, description },
+      versionId,
+      analysis,
+    });
+  } catch (error) {
+    try { await db.rollback(); } catch {}
+    return fail(res, error);
+  } finally {
+    db.release();
+  }
+});
 async function access(req, active = false) {
   const projectId = req.params.projectId;
   await requireProjectRole(req.auth.sub, projectId);

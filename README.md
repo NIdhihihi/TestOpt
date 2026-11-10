@@ -76,24 +76,35 @@ The backend runs at `http://localhost:5000`.
 
 Health check: `http://localhost:5000/api/health`
 
-### Optimization API
+### Onboarding & Optimization API
 
-Submit a change for impact analysis and test selection:
+Sign in (or complete email OTP verification via `POST /api/auth/send-otp` and `POST /api/auth/verify-otp-and-register`), then load an isolated copy of the bundled ShopCart demo project directly into your own organization:
+
+```http
+POST /api/source/projects/demo
+Authorization: Bearer <accessToken>
+Content-Type: application/json
+
+{}
+```
+
+Or submit a manual-catalog optimization change for any project belonging to your organization:
 
 ```http
 POST /api/optimization/optimize
+Authorization: Bearer <accessToken>
 Content-Type: application/json
 
 {
-  "projectId": "P_TESTOPT",
-  "changedModuleIds": ["M_AUTH"],
+  "projectId": "<yourProjectId>",
+  "changedModuleIds": ["<yourModuleId>"],
   "timeBudget": 15,
   "workerCount": 2,
   "algorithm": "GREEDY"
 }
 ```
 
-`algorithm` is the selection algorithm and accepts `GREEDY` (default) or `KNAPSACK`. The response includes `selectionAlgorithm`, affected modules, selected tests, their scores, and a persisted `runId` for the execution module. Execution separately records its scheduling strategy (`FCFS`, `PRIORITY`, `GREEDY`, or `LPT`).
+`algorithm` accepts `GREEDY` (default), `KNAPSACK`, or `BRANCH_AND_BOUND`. Single-use refresh token rotation with reuse detection is backed by `HttpOnly; SameSite=Lax` cookies at `POST /api/auth/refresh` and `POST /api/auth/logout` (`TRUST_PROXY` configures reverse-proxy IP forwarding).
 
 ### 5. Run the frontend
 

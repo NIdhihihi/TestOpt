@@ -7,6 +7,7 @@ import mysql from 'mysql2/promise';
 import dotenv from 'dotenv';
 import { example } from './src/integration/fixtures/demoProject.js';
 import { migrateDatabase, seedDatabase } from './src/db/migrator.js';
+import { setVerificationEmailSink } from './src/services/emailService.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 dotenv.config({ path: path.join(root, '.env') });
@@ -35,6 +36,10 @@ try {
   worker.stdout.on('data', data => process.stdout.write(data));
   worker.stderr.on('data', data => process.stderr.write(data));
   let token;
+  const capturedOtps = new Map();
+  setVerificationEmailSink(({ email, otp }) => {
+    capturedOtps.set(email, otp);
+  });
   const request = async (route, method = 'GET', body, auth = token) => {
     const response = await fetch(`http://127.0.0.1:5001/api${route}`, { method, headers: { 'Content-Type': 'application/json', ...(auth ? { Authorization: `Bearer ${auth}` } : {}) }, body: body ? JSON.stringify(body) : undefined });
     const text = await response.text();
@@ -42,7 +47,11 @@ try {
     return { status: response.status, data };
   };
   const account = { name: 'Smoke Tester', email: 'smoke@testopt.local', password: 'Disposable-smoke-password-123', organizationName: 'Disposable smoke organization' };
-  const registration = await request('/auth/register', 'POST', account);
+  const otpRequest = await request('/auth/send-otp', 'POST', { email: account.email, name: account.name });
+  assert.equal(otpRequest.status, 200);
+  const otpCode = capturedOtps.get(account.email);
+  assert.match(String(otpCode), /^\d{6}$/);
+  const registration = await request('/auth/verify-otp-and-register', 'POST', { ...account, otp: otpCode });
   assert.equal(registration.status, 201);
   token = registration.data.accessToken;
   await db.query("INSERT INTO organization_members (organization_id, user_id, role) VALUES ('ORG_DEFAULT', ?, 'OWNER')", [registration.data.user.userId]);
@@ -133,6 +142,7 @@ try {
     await new Promise(resolve => { const timer = setInterval(async () => { try { await fs.access(path.join(directory, 'stop')); clearInterval(timer); resolve(); } catch {} }, 1000); });
   }
 } finally {
+  setVerificationEmailSink(null);
   if (worker?.pid) {
     if (process.platform === 'win32') await new Promise(resolve => { const killer = spawn('taskkill', ['/PID', String(worker.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); killer.once('exit', resolve); killer.once('error', resolve); });
     else worker.kill('SIGTERM');
